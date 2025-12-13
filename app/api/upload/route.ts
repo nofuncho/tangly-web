@@ -29,6 +29,8 @@ export async function POST(req: Request) {
 
     const formData = await req.formData();
     const file = formData.get("file");
+    const shotTypeRaw = formData.get("shot_type");
+    const focusAreaRaw = formData.get("focus_area");
 
     if (!(file instanceof File)) {
       return NextResponse.json(
@@ -36,6 +38,27 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
+
+    if (typeof shotTypeRaw !== "string") {
+      return NextResponse.json(
+        { error: "shot_type is required" },
+        { status: 400 }
+      );
+    }
+
+    const shotType = shotTypeRaw.toLowerCase();
+    const validShotTypes = ["base", "cheek"];
+    if (!validShotTypes.includes(shotType)) {
+      return NextResponse.json(
+        { error: "Invalid shot_type" },
+        { status: 400 }
+      );
+    }
+
+    const focusArea =
+      typeof focusAreaRaw === "string" && focusAreaRaw.trim().length > 0
+        ? focusAreaRaw.toLowerCase()
+        : null;
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const fileName = `${Date.now()}-${file.name || "upload"}`;
@@ -76,6 +99,8 @@ export async function POST(req: Request) {
         image_path: uploadData.path,
         image_url: publicUrl,
         source: "upload_api",
+        shot_type: shotType,
+        focus_area: focusArea,
       })
       .select()
       .single();

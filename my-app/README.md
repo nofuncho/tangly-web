@@ -2,12 +2,14 @@
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
-## AI 피부 진단 흐름
+## AI 피부 촬영 플로우
 
-1. 홈 화면 상단의 **AI 피부 진단** 배너를 누르면 전면 카메라가 열립니다.
-2. 촬영 버튼을 누르면 전체 화면 플래시가 켜지고, 촬영된 이미지는 미리보기 카드에 표시됩니다.
-3. 촬영 직후 파일이 Next.js 업로드 API(`EXPO_PUBLIC_UPLOAD_API_URL`)로 전송됩니다. 이 API가 Supabase Storage + DB 저장을 처리합니다.
-4. 업로드가 끝나면 서버에서 돌려준 `publicUrl` 로 미리보기가 갱신되고 "피부 점수 계산 준비 중" 메시지가 표시됩니다.
+1. 세션을 시작하면 2단계(step-based) 촬영이 순차적으로 진행됩니다.
+   - **STEP 1 · 기준 얼굴(base)** : 얼굴 전체가 원형 가이드에 들어오도록 촬영
+   - **STEP 2 · 볼 클로즈업(cheek)** : 볼에 최대한 가까이 다가가 피부 결을 확보
+2. 각 단계는 완료되어야 다음 단계로 이동할 수 있으며, 가이드 오버레이가 촬영 품질을 강제합니다.
+3. 촬영 직후 이미지가 Next.js 업로드 API(`EXPO_PUBLIC_UPLOAD_API_URL`)로 전송되고, 서버가 Supabase Storage + `photos` 테이블 insert를 처리합니다.
+4. 서버는 `shot_type`(`base`/`cheek`)과 `focus_area`(`cheek` 또는 `null`) 메타 데이터를 함께 저장합니다. 업로드 완료 시 앱에 `publicUrl`과 상태가 표시됩니다.
 
 > ⚠️ `.env` 혹은 app config에 아래 값을 꼭 설정하세요.
 > ```
