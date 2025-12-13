@@ -5,17 +5,15 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
 ## AI 피부 진단 흐름
 
 1. 홈 화면 상단의 **AI 피부 진단** 배너를 누르면 전면 카메라가 열립니다.
-2. 촬영 버튼을 누를 때 전체 화면 플래시가 켜지고, 촬영된 이미지는 미리보기 카드에 표시됩니다.
-3. 촬영 직후 이미지가 Supabase Storage 버킷(`EXPO_PUBLIC_SUPABASE_BUCKET`)으로 업로드되고 public URL이 노출됩니다.
-4. 이어서 `photos` 테이블에 이미지 경로/URL이 저장됩니다. 업로드가 끝나면 "피부 점수 계산 준비 중" 상태 메시지를 확인할 수 있습니다.
+2. 촬영 버튼을 누르면 전체 화면 플래시가 켜지고, 촬영된 이미지는 미리보기 카드에 표시됩니다.
+3. 촬영 직후 파일이 Next.js 업로드 API(`EXPO_PUBLIC_UPLOAD_API_URL`)로 전송됩니다. 이 API가 Supabase Storage + DB 저장을 처리합니다.
+4. 업로드가 끝나면 서버에서 돌려준 `publicUrl` 로 미리보기가 갱신되고 "피부 점수 계산 준비 중" 메시지가 표시됩니다.
 
-> ⚠️ `.env` (or app.config) needs the following keys before building:
+> ⚠️ `.env` 혹은 app config에 아래 값을 꼭 설정하세요.
 > ```
-> EXPO_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
-> EXPO_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
-> EXPO_PUBLIC_SUPABASE_BUCKET=photos
+> EXPO_PUBLIC_UPLOAD_API_URL=http://<your-next-host>/api/upload
 > ```
-> The anon key must have RLS/storage policies that allow inserts/uploads from mobile clients.
+> 로컬 개발 시에는 노트북의 LAN IP를 사용해야 기기에서 접근할 수 있습니다(예: `http://192.168.0.20:3000/api/upload`).
 
 ## Get started
 

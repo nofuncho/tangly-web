@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -9,21 +9,15 @@ import {
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { randomUUID } from "expo-crypto";
-import * as FileSystem from "expo-file-system";
-import { Buffer } from "buffer";
 import { SafeAreaView } from "react-native-safe-area-context";
-
-import { getSupabaseClient } from "@/lib/supabase";
 
 type CaptureState = "idle" | "uploading" | "success" | "error";
 
-const SUPABASE_BUCKET =
-  process.env.EXPO_PUBLIC_SUPABASE_BUCKET || "photos";
+const UPLOAD_API_URL = process.env.EXPO_PUBLIC_UPLOAD_API_URL ?? "";
 
 export default function SkinDiagnosisScreen() {
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
-  const supabase = useMemo(() => getSupabaseClient(), []);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [flashVisible, setFlashVisible] = useState(false);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
@@ -63,53 +57,31 @@ export default function SkinDiagnosisScreen() {
     setStatusMessage("얼굴을 다시 촬영해주세요.");
   };
 
-  const uriToUint8Array = async (uri: string) => {
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
+  const uploadViaApi = async (uri: string) => {
+    if (!UPLOAD_API_URL) {
+      throw new Error("EXPO_PUBLIC_UPLOAD_API_URL 값을 설정해주세요.");
+    }
+
+    const fileName = `ai-skin-${Date.now()}-${randomUUID()}.jpg`;
+    const formData = new FormData();
+    formData.append("file", {
+      uri,
+      name: fileName,
+      type: "image/jpeg",
+    } as any);
+
+    const response = await fetch(UPLOAD_API_URL, {
+      method: "POST",
+      body: formData,
     });
-    return Buffer.from(base64, "base64");
-  };
 
-  const uploadToSupabase = async (uri: string) => {
-    const fileName = `ai-skin/${Date.now()}-${randomUUID()}.jpg`;
-    const fileBytes = await uriToUint8Array(uri);
-    const fileBuffer = fileBytes.buffer.slice(
-      fileBytes.byteOffset,
-      fileBytes.byteOffset + fileBytes.byteLength
-    );
+    const result = await response.json();
 
-    const { data: storageData, error: storageError } = await supabase.storage
-      .from(SUPABASE_BUCKET)
-      .upload(fileName, fileBuffer, {
-        contentType: "image/jpeg",
-        cacheControl: "3600",
-        upsert: false,
-      });
-
-    if (storageError) {
-      throw new Error(`스토리지 업로드 실패: ${storageError.message}`);
+    if (!response.ok) {
+      throw new Error(result?.error || "서버 업로드 실패");
     }
 
-    const {
-      data: { publicUrl },
-    } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(storageData.path);
-
-    const { data: photoRow, error: insertError } = await supabase
-      .from("photos")
-      .insert({
-        id: randomUUID(),
-        image_path: storageData.path,
-        image_url: publicUrl,
-        source: "expo_app",
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      throw new Error(`DB 저장 실패: ${insertError.message}`);
-    }
-
-    return { publicUrl, photoRow };
+    return result;
   };
 
   const triggerFlash = () => {
@@ -133,8 +105,9 @@ export default function SkinDiagnosisScreen() {
       setCaptureState("uploading");
       setStatusMessage("촬영한 이미지를 Supabase로 전송 중입니다...");
 
-      const result = await uploadToSupabase(photo.uri);
-      setUploadUrl(result?.publicUrl ?? null);
+      const result = await uploadViaApi(photo.uri);
+      const publicUrl = result?.publicUrl ?? result?.photo?.image_url ?? "";
+      setUploadUrl(publicUrl || null);
 
       setCaptureState("success");
       setStatusMessage("전송 완료! 피부 점수 계산을 준비 중입니다.");
