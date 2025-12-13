@@ -7,9 +7,10 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
 1. 세션을 시작하면 2단계(step-based) 촬영이 순차적으로 진행됩니다.
    - **STEP 1 · 기준 얼굴(base)** : 얼굴 전체가 원형 가이드에 들어오도록 촬영
    - **STEP 2 · 볼 클로즈업(cheek)** : 볼에 최대한 가까이 다가가 피부 결을 확보
-2. 각 단계는 완료되어야 다음 단계로 이동할 수 있으며, 가이드 오버레이가 촬영 품질을 강제합니다.
-3. 촬영 직후 이미지가 Next.js 업로드 API(`EXPO_PUBLIC_UPLOAD_API_URL`)로 전송되고, 서버가 Supabase Storage + `photos` 테이블 insert를 처리합니다.
-4. 서버는 `shot_type`(`base`/`cheek`)과 `focus_area`(`cheek` 또는 `null`) 메타 데이터를 함께 저장합니다. 업로드 완료 시 앱에 `publicUrl`과 상태가 표시됩니다.
+2. 각 단계는 **품질 판정**을 거치며, “분석에 적합/다시 촬영 권장” 메시지를 보여줍니다.
+3. 품질을 통과한 촬영만 Next.js 업로드 API(`EXPO_PUBLIC_UPLOAD_API_URL`)로 전송되고, 서버가 Supabase Storage + `photos` 테이블 insert를 처리합니다.
+4. 서버는 `shot_type`(`base`/`cheek`)과 `focus_area`(`cheek` 또는 `null`) 메타 데이터를 함께 저장합니다.
+5. 두 단계가 모두 끝나면 **AI 분석 중** 화면에서 단계적인 로딩 연출을 보여주고, 이후 설명형 **1차 리포트**를 노출합니다 (점수 대신 언어 중심 요약).
 
 > ⚠️ `.env` 혹은 app config에 아래 값을 꼭 설정하세요.
 > ```
