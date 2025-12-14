@@ -10,8 +10,9 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
 2. 각 단계는 **품질 판정**을 거치며, “분석에 적합/다시 촬영 권장” 메시지를 보여줍니다.
 3. 품질을 통과한 촬영만 Next.js 업로드 API(`EXPO_PUBLIC_UPLOAD_API_URL`)로 전송되고, 서버가 Supabase Storage + `photos` 테이블 insert를 처리합니다.
 4. 서버는 `analysis_sessions`를 먼저 생성하고, 촬영 결과는 해당 `session_id`로 저장됩니다.
-5. 촬영이 모두 끝나면 바로 **AI 분석 중** 화면 → 설명형 **1차 리포트** 흐름이 재생됩니다 (점수 대신 언어 중심 요약).
-6. 리포트 화면에서 생활습관 **OX 질문**을 추가로 받을 수 있으며, 각 응답은 `ox_responses` 테이블에 row 단위(`question_key`, `answer`)로 저장돼 향후 리포트 문장 톤을 보정합니다.
+5. 분석이 완료되면 서버가 촬영 데이터 + OX 응답을 조합해 세션 기반 요약과 필요한 케어 태그, 제품 추천(최대 3개)을 생성합니다.
+6. 촬영이 모두 끝나면 **AI 분석 중** 화면 → 설명형 **1차 리포트** → 맞춤형 제품 추천 흐름이 재생됩니다 (점수 대신 언어 중심 요약).
+7. 리포트 화면에서 생활습관 **OX 질문**을 추가로 받을 수 있으며, 각 응답은 `ox_responses` 테이블에 row 단위(`question_key`, `answer`)로 저장돼 향후 리포트 문장 톤과 추천 사유에 반영됩니다.
 
 > ⚠️ `.env` 혹은 app config에 아래 값을 꼭 설정하세요.
 > ```

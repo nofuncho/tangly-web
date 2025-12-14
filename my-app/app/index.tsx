@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Text,
   View,
+  Platform,
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -64,12 +65,33 @@ type ReportItem = {
   status: "좋음" | "보통" | "주의";
 };
 
+type NeedFocus = {
+  id: string;
+  label: string;
+  level: "high" | "medium";
+  description: string;
+};
+
+type ProductRecommendationInfo = {
+  id: string;
+  name: string;
+  brand: string | null;
+  category: string | null;
+  reason: string;
+  focus: string[];
+  keyIngredients: string[];
+  note?: string | null;
+  imageUrl?: string | null;
+};
+
 type ReportData = {
   sessionLabel: string;
   summary: string;
   highlight: string;
   items: ReportItem[];
   tips: string[];
+  needs: NeedFocus[];
+  recommendations: ProductRecommendationInfo[];
 };
 
 type OXAnswer = "O" | "X" | null;
@@ -90,7 +112,7 @@ const SERVER_BASE_URL = (() => {
     try {
       const url = new URL(UPLOAD_API_URL);
       return `${url.protocol}//${url.host}`;
-    } catch (error) {
+    } catch {
       return "";
     }
   }
@@ -270,6 +292,65 @@ export default function StepBasedCaptureScreen() {
     }
   };
 
+  const refreshServerReport = async (
+    options?: { loadingMessage?: string; doneMessage?: string }
+  ) => {
+    const fallbackToLocalReport = () => {
+      const fallback = buildReportFromQuality(
+        stepStatesRef.current,
+        sessionIdRef.current,
+        oxAnswersRef.current
+      );
+      setReportData(fallback);
+      setGlobalMessage("기본 리포트를 표시합니다.");
+    };
+
+    if (!sessionIdRef.current) {
+      fallbackToLocalReport();
+      setFlowStage("report");
+      return;
+    }
+    if (!SERVER_BASE_URL) {
+      fallbackToLocalReport();
+      setFlowStage("report");
+      return;
+    }
+
+    try {
+      setGlobalMessage(
+        options?.loadingMessage ?? "리포트를 정리하는 중입니다..."
+      );
+      const response = await fetch(
+        `${SERVER_BASE_URL}/api/analysis-sessions/${sessionIdRef.current}/recommendations`
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.error || "리포트 생성에 실패했습니다.");
+      }
+
+      setReportData({
+        sessionLabel:
+          payload.sessionLabel ?? payload.sessionId ?? sessionIdRef.current,
+        summary: payload.summary ?? "",
+        highlight: payload.highlight ?? "",
+        items: Array.isArray(payload.items) ? payload.items : [],
+        tips: Array.isArray(payload.tips) ? payload.tips : [],
+        needs: Array.isArray(payload.needs) ? payload.needs : [],
+        recommendations: Array.isArray(payload.recommendations)
+          ? payload.recommendations
+          : [],
+      });
+      setGlobalMessage(
+        options?.doneMessage ?? "1차 리포트가 준비되었습니다."
+      );
+    } catch (error) {
+      console.warn("Failed to fetch recommendations", error);
+      fallbackToLocalReport();
+    } finally {
+      setFlowStage("report");
+    }
+  };
+
   const openOxStage = () => {
     if (!sessionIdRef.current) {
       setGlobalMessage("세션 정보가 없어 다시 시작해야 합니다.");
@@ -343,27 +424,45 @@ export default function StepBasedCaptureScreen() {
     const height = photo.height ?? 0;
     const area = width * height;
     const ratio = width > 0 ? height / width : 0;
+    const onAndroid = Platform.OS === "android";
 
     if (step.shotType === "base") {
-      const passed = area >= 1e6 && ratio > 0.85 && ratio < 1.45;
+      const minArea = onAndroid ? 6e5 : 1e6;
+      const minRatio = onAndroid ? 0.7 : 0.85;
+      const maxRatio = onAndroid ? 1.65 : 1.45;
+      let passed = area >= minArea && ratio > minRatio && ratio < maxRatio;
+
+      if (!passed && onAndroid && width >= 720 && height >= 960) {
+        // 일부 안드로이드 기기에서 해상도는 충분하지만 비율이 조금 어긋나는 이슈가 있어 완화
+        passed = true;
+      }
       return {
         passed,
         headline: passed ? "분석에 적합한 기준 촬영입니다." : "얼굴이 충분히 채워지지 않았어요.",
         detail: passed
           ? "얼굴 윤곽이 안정적으로 포착되었습니다."
-          : "가이드 원 안에 이마와 턱이 모두 들어오도록 한 걸음만 더 다가와 촬영해주세요.",
+          : onAndroid
+            ? "카메라와 얼굴 사이 거리를 조금만 줄여 가이드 원을 채워주세요."
+            : "가이드 원 안에 이마와 턱이 모두 들어오도록 한 걸음만 더 다가와 촬영해주세요.",
         tip: "카메라와 눈높이를 맞추고 어깨가 살짝 보이도록 정면을 유지하면 통과 확률이 높아집니다.",
         metrics: { area, ratio },
       };
     }
 
-    const passed = area >= 8.5e5 && ratio > 1.0;
+    const cheekMinArea = onAndroid ? 5e5 : 8.5e5;
+    const cheekMinRatio = onAndroid ? 0.9 : 1.0;
+    let passed = area >= cheekMinArea && ratio > cheekMinRatio;
+    if (!passed && onAndroid && width >= 640 && height >= 900) {
+      passed = true;
+    }
     return {
       passed,
       headline: passed ? "볼 질감이 잘 잡혔어요." : "볼에 조금만 더 가까이 다가가주세요.",
       detail: passed
         ? "피부 결이 선명하게 보이는 거리입니다."
-        : "볼 영역이 프레임의 절반 이상을 차지하도록 화면에 붙는다는 느낌으로 촬영해 주세요.",
+        : onAndroid
+          ? "카메라를 볼에 더 가까이 가져가 화면을 넉넉히 채워주세요."
+          : "볼 영역이 프레임의 절반 이상을 차지하도록 화면에 붙는다는 느낌으로 촬영해 주세요.",
       tip: "볼을 프레임 오른쪽 상단에 맞추고, 화면을 넉넉히 채우도록 천천히 접근하세요.",
       metrics: { area, ratio },
     };
@@ -378,11 +477,12 @@ export default function StepBasedCaptureScreen() {
     }
 
     const formData = new FormData();
-    formData.append("file", {
+    const filePayload = {
       uri,
       name: `${step.id}-${Date.now()}.jpg`,
       type: "image/jpeg",
-    } as any);
+    };
+    formData.append("file", filePayload as unknown as Blob);
     formData.append("shot_type", step.shotType);
     if (step.focusArea) {
       formData.append("focus_area", step.focusArea);
@@ -436,14 +536,10 @@ export default function StepBasedCaptureScreen() {
       }
       await updateSessionStatus("ox_collected");
       setOxCompleted(true);
-      const refreshedReport = buildReportFromQuality(
-        stepStatesRef.current,
-        sessionIdRef.current,
-        oxAnswersRef.current
-      );
-      setReportData(refreshedReport);
-      setFlowStage("report");
-      setGlobalMessage("OX 응답이 반영되었습니다. 리포트를 확인하세요.");
+      await refreshServerReport({
+        loadingMessage: "OX 응답을 반영하는 중입니다...",
+        doneMessage: "OX 응답이 반영되었습니다. 리포트를 확인하세요.",
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : "OX 저장에 실패했습니다.";
       setOxError(message);
@@ -558,17 +654,15 @@ export default function StepBasedCaptureScreen() {
 
         if (idx === ANALYSIS_SEQUENCE.length - 1) {
           const finishTimer = setTimeout(() => {
-            const report = buildReportFromQuality(
-              stepStatesRef.current,
-              sessionIdRef.current,
-              oxAnswersRef.current
-            );
-            setReportData(report);
-            setFlowStage("report");
-            setGlobalMessage("1차 리포트가 준비되었습니다.");
+            refreshServerReport({
+              loadingMessage: "1차 리포트를 정리하는 중입니다...",
+              doneMessage: "1차 리포트가 준비되었습니다.",
+            });
             updateSessionStatus("report_ready");
           }, 1000);
-          analysisTimers.current.push(finishTimer as ReturnType<typeof setTimeout>);
+          analysisTimers.current.push(
+            finishTimer as ReturnType<typeof setTimeout>
+          );
         }
       }, 1600 * (idx + 1));
       analysisTimers.current.push(timer as ReturnType<typeof setTimeout>);
@@ -959,6 +1053,16 @@ const ReportView = ({
     <Text style={styles.reportSession}>세션: {data.sessionLabel}</Text>
     <Text style={styles.reportSummary}>{data.summary}</Text>
     <Text style={styles.reportHighlight}>{data.highlight}</Text>
+    {data.needs.length > 0 && <NeedFocusList needs={data.needs} />}
+
+    {data.recommendations.length > 0 && (
+      <View style={styles.recommendSection}>
+        <Text style={styles.recommendSectionTitle}>세션 맞춤 제품 추천</Text>
+        {data.recommendations.map((item) => (
+          <ProductRecommendationCard key={item.id} item={item} />
+        ))}
+      </View>
+    )}
 
     <View style={styles.reportItemList}>
       {data.items.map((item) => (
@@ -1002,6 +1106,60 @@ const ReportView = ({
     <Pressable style={styles.reportRestart} onPress={onRestart}>
       <Text style={styles.reportRestartText}>새로운 촬영 시작</Text>
     </Pressable>
+  </View>
+);
+
+const NeedFocusList = ({ needs }: { needs: NeedFocus[] }) => (
+  <View style={styles.needsCard}>
+    <Text style={styles.needsTitle}>이번 세션에서 우선 보완할 케어</Text>
+    {needs.map((need) => (
+      <View key={need.id} style={styles.needRow}>
+        <View style={styles.needBadge}>
+          <Text style={styles.needBadgeLabel}>{need.label}</Text>
+          <Text style={styles.needBadgeLevel}>
+            {need.level === "high" ? "우선" : "보강"}
+          </Text>
+        </View>
+        <Text style={styles.needDescription}>{need.description}</Text>
+      </View>
+    ))}
+  </View>
+);
+
+const ProductRecommendationCard = ({
+  item,
+}: {
+  item: ProductRecommendationInfo;
+}) => (
+  <View style={styles.recommendCard}>
+    <View style={styles.recommendHeader}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.recommendName}>{item.name}</Text>
+        {item.brand && <Text style={styles.recommendBrand}>{item.brand}</Text>}
+        {item.category && (
+          <Text style={styles.recommendCategory}>{item.category}</Text>
+        )}
+      </View>
+      {item.imageUrl ? (
+        <Image source={{ uri: item.imageUrl }} style={styles.recommendImage} />
+      ) : null}
+    </View>
+    <Text style={styles.recommendReason}>{item.reason}</Text>
+    {item.focus.length > 0 && (
+      <View style={styles.recommendFocusRow}>
+        {item.focus.map((focus) => (
+          <Text key={focus} style={styles.recommendFocusChip}>
+            {focus}
+          </Text>
+        ))}
+      </View>
+    )}
+    {item.keyIngredients.length > 0 && (
+      <Text style={styles.recommendIngredients}>
+        핵심 성분: {item.keyIngredients.join(", ")}
+      </Text>
+    )}
+    {item.note ? <Text style={styles.recommendNote}>{item.note}</Text> : null}
   </View>
 );
 
@@ -1118,6 +1276,16 @@ const buildReportFromQuality = (
     highlight,
     items,
     tips,
+    needs: [
+      {
+        id: "hydration",
+        label: "수분 케어",
+        level: "medium",
+        description:
+          "기본 리포트입니다. 서버 리포트가 연결되면 자동으로 대체됩니다.",
+      },
+    ],
+    recommendations: [],
   };
 };
 
@@ -1569,6 +1737,107 @@ const styles = StyleSheet.create({
   reportRestartText: {
     color: "white",
     fontWeight: "700",
+  },
+  needsCard: {
+    backgroundColor: "#F4F0FF",
+    borderRadius: 16,
+    padding: 16,
+    gap: 12,
+  },
+  needsTitle: {
+    fontWeight: "700",
+    color: "#1f1b2e",
+  },
+  needRow: {
+    backgroundColor: "white",
+    borderRadius: 12,
+    padding: 12,
+    gap: 6,
+  },
+  needBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  needBadgeLabel: {
+    fontWeight: "700",
+    color: "#5C3AA1",
+  },
+  needBadgeLevel: {
+    backgroundColor: "#E4DDF7",
+    paddingHorizontal: 10,
+    paddingVertical: 2,
+    borderRadius: 999,
+    fontSize: 12,
+    color: "#5C3AA1",
+    fontWeight: "700",
+  },
+  needDescription: {
+    color: "#4B3A63",
+    fontSize: 13,
+  },
+  recommendSection: {
+    gap: 12,
+  },
+  recommendSectionTitle: {
+    fontWeight: "700",
+    color: "#1f1b2e",
+    fontSize: 16,
+  },
+  recommendCard: {
+    backgroundColor: "#F6F1FA",
+    borderRadius: 16,
+    padding: 16,
+    gap: 8,
+  },
+  recommendHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  recommendName: {
+    fontWeight: "700",
+    color: "#1f1b2e",
+    fontSize: 16,
+  },
+  recommendBrand: {
+    color: "#6A4BA1",
+    fontSize: 13,
+  },
+  recommendCategory: {
+    color: "#8C7FAE",
+    fontSize: 12,
+  },
+  recommendImage: {
+    width: 64,
+    height: 64,
+    borderRadius: 10,
+    backgroundColor: "#E4DDF7",
+  },
+  recommendReason: {
+    color: "#4B3A63",
+    fontSize: 13,
+  },
+  recommendFocusRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  recommendFocusChip: {
+    backgroundColor: "#1f1b2e",
+    color: "white",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    fontSize: 12,
+  },
+  recommendIngredients: {
+    color: "#5C3AA1",
+    fontSize: 12,
+  },
+  recommendNote: {
+    color: "#7A6D92",
+    fontSize: 12,
   },
   summarySection: {
     gap: 12,
