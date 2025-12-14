@@ -11,7 +11,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: { sessionId?: string } }
 ) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -21,7 +21,8 @@ export async function GET(
     );
   }
 
-  const sessionId = params.sessionId;
+  const sessionId =
+    params.sessionId ?? extractSessionIdFromUrl(req.url ?? "");
   if (!sessionId) {
     return NextResponse.json({ error: "Session id is required" }, { status: 400 });
   }
@@ -67,7 +68,7 @@ export async function GET(
     const { data: productsData, error: productError } = await supabase
       .from("products")
       .select(
-        "id, name, title, brand, category, key_ingredients, effect_tags, note, image_url"
+        "id, name, brand, category, key_ingredients, effect_tags, note, image_url"
       )
       .limit(80);
 
@@ -90,3 +91,17 @@ export async function GET(
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
+
+const extractSessionIdFromUrl = (url: string) => {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const analysisIndex = parts.indexOf("analysis-sessions");
+    if (analysisIndex >= 0 && parts.length > analysisIndex + 1) {
+      return parts[analysisIndex + 1];
+    }
+  } catch (error) {
+    console.warn("Failed to extract sessionId from url", error);
+  }
+  return "";
+};
