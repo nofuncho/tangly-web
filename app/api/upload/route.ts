@@ -31,10 +31,18 @@ export async function POST(req: Request) {
     const file = formData.get("file");
     const shotTypeRaw = formData.get("shot_type");
     const focusAreaRaw = formData.get("focus_area");
+    const sessionIdRaw = formData.get("session_id");
 
     if (!(file instanceof File)) {
       return NextResponse.json(
         { error: "File is required" },
+        { status: 400 }
+      );
+    }
+
+    if (typeof sessionIdRaw !== "string" || sessionIdRaw.trim().length === 0) {
+      return NextResponse.json(
+        { error: "session_id is required" },
         { status: 400 }
       );
     }
@@ -59,6 +67,7 @@ export async function POST(req: Request) {
       typeof focusAreaRaw === "string" && focusAreaRaw.trim().length > 0
         ? focusAreaRaw.toLowerCase()
         : null;
+    const sessionId = sessionIdRaw.trim();
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const fileName = `${Date.now()}-${file.name || "upload"}`;
@@ -96,6 +105,7 @@ export async function POST(req: Request) {
       .from("photos")
       .insert({
         id: randomUUID(), // ✅ 반드시 필요
+        session_id: sessionId,
         image_path: uploadData.path,
         image_url: publicUrl,
         source: "upload_api",

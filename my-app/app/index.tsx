@@ -11,8 +11,15 @@ import {
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-type FlowStage = "intro" | "capture" | "analyzing" | "report";
+type FlowStage = "intro" | "capture" | "ox" | "analyzing" | "report";
 type CaptureState = "idle" | "uploading" | "completed" | "error";
+type SessionStatus =
+  | "capturing"
+  | "awaiting_ox"
+  | "ox_collected"
+  | "analyzing"
+  | "report_ready"
+  | "failed";
 
 type QualityResult = {
   passed: boolean;
@@ -65,7 +72,30 @@ type ReportData = {
   tips: string[];
 };
 
+type OXAnswer = "O" | "X" | null;
+
+type OXQuestion = {
+  key: string;
+  title: string;
+  description: string;
+};
+
 const UPLOAD_API_URL = process.env.EXPO_PUBLIC_UPLOAD_API_URL ?? "";
+const SERVER_BASE_URL = (() => {
+  const envBase = process.env.EXPO_PUBLIC_SERVER_BASE_URL?.replace(/\/$/, "");
+  if (envBase) {
+    return envBase;
+  }
+  if (UPLOAD_API_URL) {
+    try {
+      const url = new URL(UPLOAD_API_URL);
+      return `${url.protocol}//${url.host}`;
+    } catch (error) {
+      return "";
+    }
+  }
+  return "";
+})();
 
 const STEP_CONFIGS: StepConfig[] = [
   {
@@ -95,6 +125,34 @@ const ANALYSIS_SEQUENCE = [
   { id: "tone", label: "톤 균형 측정 중" },
 ];
 
+const OX_QUESTIONS: OXQuestion[] = [
+  {
+    key: "sensitive_skin",
+    title: "최근 2주 동안 피부가 예민하거나 따가웠나요?",
+    description: "O: 자주 그렇다 / X: 거의 없다",
+  },
+  {
+    key: "frequent_makeup",
+    title: "평소 메이크업을 자주 하나요?",
+    description: "O: 주 4회 이상 / X: 주 3회 이하",
+  },
+  {
+    key: "daily_sunscreen",
+    title: "외출 시 자외선 차단제를 항상 바르나요?",
+    description: "O: 거의 매번 사용 / X: 가끔 또는 거의 사용하지 않음",
+  },
+  {
+    key: "recent_skin_trouble",
+    title: "최근 일주일 내 여드름/트러블이 있었나요?",
+    description: "O: 있다 / X: 없다",
+  },
+  {
+    key: "oiliness_high",
+    title: "피부 유분이 많은 편인가요?",
+    description: "O: 번들거림이 느껴진다 / X: 건조하거나 보통",
+  },
+];
+
 const createInitialStepState = (): StepState => ({
   status: "idle",
   previewUri: null,
@@ -102,6 +160,13 @@ const createInitialStepState = (): StepState => ({
   message: "촬영을 시작해주세요.",
   quality: null,
 });
+
+const createInitialOxAnswers = (): Record<string, OXAnswer> => (
+  OX_QUESTIONS.reduce((acc, question) => {
+    acc[question.key] = null;
+    return acc;
+  }, {} as Record<string, OXAnswer>)
+);
 
 export default function StepBasedCaptureScreen() {
   const cameraRef = useRef<CameraView>(null);
@@ -119,13 +184,23 @@ export default function StepBasedCaptureScreen() {
     ANALYSIS_SEQUENCE.map((step) => ({ ...step, status: "pending" }))
   );
   const [reportData, setReportData] = useState<ReportData | null>(null);
+  const [oxAnswers, setOxAnswers] = useState<Record<string, OXAnswer>>(createInitialOxAnswers());
+  const [oxSubmitting, setOxSubmitting] = useState(false);
+  const [oxError, setOxError] = useState<string | null>(null);
+  const [oxCompleted, setOxCompleted] = useState(false);
+
   const analysisTimers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const stepStatesRef = useRef(stepStates);
+  const oxAnswersRef = useRef(oxAnswers);
   const sessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     stepStatesRef.current = stepStates;
   }, [stepStates]);
+
+  useEffect(() => {
+    oxAnswersRef.current = oxAnswers;
+  }, [oxAnswers]);
 
   useEffect(() => {
     return () => {
@@ -143,6 +218,11 @@ export default function StepBasedCaptureScreen() {
     [stepStates]
   );
 
+  const allOxAnswered = useMemo(
+    () => Object.values(oxAnswers).every((value) => value === "O" || value === "X"),
+    [oxAnswers]
+  );
+
   useEffect(() => {
     if (flowStage === "capture" && allCompleted) {
       beginAnalysisPhase();
@@ -155,6 +235,56 @@ export default function StepBasedCaptureScreen() {
     return response.granted;
   };
 
+  const createAnalysisSession = async () => {
+    if (!SERVER_BASE_URL) {
+      throw new Error("서버 API 주소가 설정되지 않았습니다.");
+    }
+
+    const res = await fetch(`${SERVER_BASE_URL}/api/analysis-sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source: "expo_app", status: "capturing" }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data?.sessionId) {
+      throw new Error(data?.error || "세션 생성에 실패했습니다.");
+    }
+    return data.sessionId as string;
+  };
+
+  const updateSessionStatus = async (status: SessionStatus) => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    try {
+      if (!SERVER_BASE_URL) {
+        throw new Error("서버 API 주소가 설정되지 않았습니다.");
+      }
+
+      await fetch(`${SERVER_BASE_URL}/api/analysis-sessions/${sessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+    } catch (error) {
+      console.warn("Failed to update session status", error);
+    }
+  };
+
+  const openOxStage = () => {
+    if (!sessionIdRef.current) {
+      setGlobalMessage("세션 정보가 없어 다시 시작해야 합니다.");
+      return;
+    }
+    setFlowStage("ox");
+    setGlobalMessage("생활 습관 정보를 입력하면 리포트가 더 정교해집니다.");
+    updateSessionStatus("awaiting_ox");
+  };
+
+  const returnToReport = () => {
+    setFlowStage("report");
+    setGlobalMessage("리포트에서 분석 결과를 확인하세요.");
+  };
+
   const startSession = async () => {
     const granted = await ensurePermission();
     if (!granted) {
@@ -162,22 +292,33 @@ export default function StepBasedCaptureScreen() {
       return;
     }
 
-    analysisTimers.current.forEach((timer) => clearTimeout(timer));
-    analysisTimers.current = [];
+    try {
+      setGlobalMessage("분석 세션을 준비하는 중입니다...");
+      const sessionId = await createAnalysisSession();
+      sessionIdRef.current = sessionId;
+      analysisTimers.current.forEach((timer) => clearTimeout(timer));
+      analysisTimers.current = [];
 
-    const newSessionId = `session_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-    sessionIdRef.current = newSessionId;
-
-    setStepStates(STEP_CONFIGS.map(() => createInitialStepState()));
-    setCurrentStepIndex(0);
-    setReportData(null);
-    setAnalysisSteps(ANALYSIS_SEQUENCE.map((step, index) => ({
-      ...step,
-      status: index === 0 ? "active" : "pending",
-    })));
-    setFlashVisible(false);
-    setFlowStage("capture");
-    setGlobalMessage("가이드에 맞춰 기준 촬영부터 진행해주세요.");
+      setStepStates(STEP_CONFIGS.map(() => createInitialStepState()));
+      setCurrentStepIndex(0);
+      setReportData(null);
+      setFlashVisible(false);
+      setFlowStage("capture");
+      setAnalysisSteps(
+        ANALYSIS_SEQUENCE.map((step, index) => ({
+          ...step,
+          status: index === 0 ? "active" : "pending",
+        }))
+      );
+      setOxAnswers(createInitialOxAnswers());
+      setOxSubmitting(false);
+      setOxError(null);
+      setOxCompleted(false);
+      setGlobalMessage("가이드에 맞춰 기준 촬영부터 진행해주세요.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "세션 생성 실패";
+      setGlobalMessage(message);
+    }
   };
 
   const resetStep = (index: number) => {
@@ -232,6 +373,9 @@ export default function StepBasedCaptureScreen() {
     if (!UPLOAD_API_URL) {
       throw new Error("EXPO_PUBLIC_UPLOAD_API_URL 값을 설정해주세요.");
     }
+    if (!sessionIdRef.current) {
+      throw new Error("세션 정보가 없습니다. 다시 세션을 시작해주세요.");
+    }
 
     const formData = new FormData();
     formData.append("file", {
@@ -243,9 +387,7 @@ export default function StepBasedCaptureScreen() {
     if (step.focusArea) {
       formData.append("focus_area", step.focusArea);
     }
-    if (sessionIdRef.current) {
-      formData.append("session_id", sessionIdRef.current);
-    }
+    formData.append("session_id", sessionIdRef.current);
 
     const response = await fetch(UPLOAD_API_URL, {
       method: "POST",
@@ -257,6 +399,58 @@ export default function StepBasedCaptureScreen() {
       throw new Error(result?.error || "업로드 실패");
     }
     return result;
+  };
+
+  const submitOxResponses = async () => {
+    if (!sessionIdRef.current) {
+      setGlobalMessage("세션 정보가 없어 다시 시작이 필요합니다.");
+      return;
+    }
+    if (!allOxAnswered) {
+      setOxError("모든 질문에 답변해야 분석을 시작할 수 있습니다.");
+      return;
+    }
+
+    setOxSubmitting(true);
+    setOxError(null);
+    setGlobalMessage("응답을 저장하는 중입니다...");
+
+    const payload = Object.entries(oxAnswers).map(([questionKey, answer]) => ({
+      question_key: questionKey,
+      answer: (answer ?? "O") as "O" | "X",
+    }));
+
+    try {
+      if (!SERVER_BASE_URL) {
+        throw new Error("서버 API 주소가 설정되지 않았습니다.");
+      }
+
+      const response = await fetch(`${SERVER_BASE_URL}/api/analysis-sessions/${sessionIdRef.current}/ox`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionIdRef.current, responses: payload }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || "OX 저장에 실패했습니다.");
+      }
+      await updateSessionStatus("ox_collected");
+      setOxCompleted(true);
+      const refreshedReport = buildReportFromQuality(
+        stepStatesRef.current,
+        sessionIdRef.current,
+        oxAnswersRef.current
+      );
+      setReportData(refreshedReport);
+      setFlowStage("report");
+      setGlobalMessage("OX 응답이 반영되었습니다. 리포트를 확인하세요.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "OX 저장에 실패했습니다.";
+      setOxError(message);
+      setGlobalMessage(message);
+    } finally {
+      setOxSubmitting(false);
+    }
   };
 
   const updateStepState = (index: number, patch: Partial<StepState>) => {
@@ -314,7 +508,7 @@ export default function StepBasedCaptureScreen() {
 
       setGlobalMessage(
         currentStepIndex === STEP_CONFIGS.length - 1
-          ? "모든 촬영이 끝났어요. 분석을 준비합니다."
+          ? "모든 촬영이 끝났어요. 곧 분석을 시작합니다."
           : "촬영이 저장되었습니다. 다음 단계로 넘어가세요."
       );
     } catch (error) {
@@ -340,6 +534,7 @@ export default function StepBasedCaptureScreen() {
   const beginAnalysisPhase = () => {
     setFlowStage("analyzing");
     setGlobalMessage("Tangly AI가 촬영 이미지를 분석 중입니다.");
+    updateSessionStatus("analyzing");
     setAnalysisSteps(
       ANALYSIS_SEQUENCE.map((step, index) => ({
         ...step,
@@ -365,11 +560,13 @@ export default function StepBasedCaptureScreen() {
           const finishTimer = setTimeout(() => {
             const report = buildReportFromQuality(
               stepStatesRef.current,
-              sessionIdRef.current
+              sessionIdRef.current,
+              oxAnswersRef.current
             );
             setReportData(report);
             setFlowStage("report");
             setGlobalMessage("1차 리포트가 준비되었습니다.");
+            updateSessionStatus("report_ready");
           }, 1000);
           analysisTimers.current.push(finishTimer as ReturnType<typeof setTimeout>);
         }
@@ -378,77 +575,12 @@ export default function StepBasedCaptureScreen() {
     });
   };
 
-  const renderOverlay = () => {
-    if (currentStep.overlay === "base") {
-      return <BaseGuideOverlay />;
-    }
-    return <CheekGuideOverlay />;
-  };
-
-  const renderCamera = () => {
-    if (!permission) {
-      return <View style={styles.permissionCard} />;
-    }
-
-    if (!permission.granted) {
-      return (
-        <View style={styles.permissionCard}>
-          <Text style={styles.permissionText}>
-            전면 카메라 접근 권한이 필요합니다.
-          </Text>
-          <Pressable style={styles.permissionButton} onPress={requestPermission}>
-            <Text style={styles.permissionButtonText}>권한 허용</Text>
-          </Pressable>
-        </View>
-      );
-    }
-
-    return (
-      <View style={styles.cameraWrapper}>
-        <CameraView
-          ref={cameraRef}
-          style={styles.camera}
-          facing="front"
-          ratio="4:3"
-        />
-        {renderOverlay()}
-        {flashVisible && <View style={styles.flashOverlay} pointerEvents="none" />}
-
-        <View style={styles.cameraControls}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.shutterButton,
-              pressed && styles.shutterPressed,
-              isUploading && styles.buttonDisabled,
-            ]}
-            onPress={handleCapture}
-            disabled={isUploading}
-          >
-            {isUploading ? (
-              <ActivityIndicator color="#1f1b2e" />
-            ) : (
-              <Text style={styles.shutterLabel}>촬영</Text>
-            )}
-          </Pressable>
-
-          <Pressable
-            style={[styles.closeButton, isUploading && styles.buttonDisabled]}
-            onPress={() => resetStep(currentStepIndex)}
-            disabled={isUploading}
-          >
-            <Text style={styles.closeButtonText}>다시 촬영</Text>
-          </Pressable>
-        </View>
-      </View>
-    );
-  };
-
   const heroButtonLabel =
-    flowStage === "capture"
-      ? "세션 다시 시작하기"
-      : flowStage === "analyzing" || flowStage === "report"
-        ? "새로운 세션 시작"
-        : "촬영 세션 시작";
+    flowStage === "intro"
+      ? "촬영 세션 시작"
+      : flowStage === "capture"
+        ? "세션 다시 시작하기"
+        : "새로운 세션 시작";
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -528,12 +660,31 @@ export default function StepBasedCaptureScreen() {
           </View>
         )}
 
+        {flowStage === "ox" && (
+          <OXQuestionView
+            answers={oxAnswers}
+            submitting={oxSubmitting}
+            allAnswered={allOxAnswered}
+            errorMessage={oxError}
+            onAnswer={(key, answer) =>
+              setOxAnswers((prev) => ({ ...prev, [key]: answer }))
+            }
+            onSubmit={submitOxResponses}
+            onBack={returnToReport}
+          />
+        )}
+
         {flowStage === "analyzing" && (
           <AnalysisProgressView steps={analysisSteps} />
         )}
 
         {flowStage === "report" && reportData && (
-          <ReportView data={reportData} onRestart={startSession} />
+          <ReportView
+            data={reportData}
+            onRestart={startSession}
+            onOpenOx={openOxStage}
+            oxCompleted={oxCompleted}
+          />
         )}
 
         <View style={styles.summarySection}>
@@ -570,6 +721,64 @@ export default function StepBasedCaptureScreen() {
       </ScrollView>
     </SafeAreaView>
   );
+
+  function renderCamera() {
+    if (!permission) {
+      return <View style={styles.permissionCard} />;
+    }
+
+    if (!permission.granted) {
+      return (
+        <View style={styles.permissionCard}>
+          <Text style={styles.permissionText}>
+            전면 카메라 접근 권한이 필요합니다.
+          </Text>
+          <Pressable style={styles.permissionButton} onPress={requestPermission}>
+            <Text style={styles.permissionButtonText}>권한 허용</Text>
+          </Pressable>
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.cameraWrapper}>
+        <CameraView
+          ref={cameraRef}
+          style={styles.camera}
+          facing="front"
+          ratio="4:3"
+        />
+        {currentStep.overlay === "base" ? <BaseGuideOverlay /> : <CheekGuideOverlay />}
+        {flashVisible && <View style={styles.flashOverlay} pointerEvents="none" />}
+
+        <View style={styles.cameraControls}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.shutterButton,
+              pressed && styles.shutterPressed,
+              isUploading && styles.buttonDisabled,
+            ]}
+            onPress={handleCapture}
+            disabled={isUploading}
+          >
+            {isUploading ? (
+              <ActivityIndicator color="#1f1b2e" />
+            ) : (
+              <Text style={styles.shutterLabel}>촬영</Text>
+            )}
+          </Pressable>
+
+          <Pressable
+            style={[styles.closeButton, isUploading && styles.buttonDisabled]}
+            onPress={() => resetStep(currentStepIndex)}
+            disabled={isUploading}
+          >
+            <Text style={styles.closeButtonText}>다시 촬영</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
 }
 
 function renderStatusLabel(status: CaptureState) {
@@ -664,12 +873,86 @@ const AnalysisProgressView = ({
   </View>
 );
 
+const OXQuestionView = ({
+  answers,
+  submitting,
+  allAnswered,
+  errorMessage,
+  onAnswer,
+  onSubmit,
+  onBack,
+}: {
+  answers: Record<string, OXAnswer>;
+  submitting: boolean;
+  allAnswered: boolean;
+  errorMessage: string | null;
+  onAnswer: (key: string, answer: "O" | "X") => void;
+  onSubmit: () => void;
+  onBack: () => void;
+}) => (
+  <View style={styles.oxCard}>
+    <Text style={styles.oxTitle}>간단한 질문에 답해주세요</Text>
+    <Text style={styles.oxSubtitle}>
+      생활 습관 정보를 함께 확인하면 리포트가 더 정확해져요.
+    </Text>
+    {OX_QUESTIONS.map((question) => (
+      <View key={question.key} style={styles.oxQuestion}>
+        <Text style={styles.oxQuestionTitle}>{question.title}</Text>
+        <Text style={styles.oxQuestionDesc}>{question.description}</Text>
+        <View style={styles.oxAnswerRow}>
+          {(["O", "X"] as const).map((option) => {
+            const selected = answers[question.key] === option;
+            return (
+              <Pressable
+                key={option}
+                style={[
+                  styles.oxAnswerButton,
+                  selected && styles.oxAnswerSelected,
+                ]}
+                onPress={() => onAnswer(question.key, option)}
+              >
+                <Text
+                  style={[
+                    styles.oxAnswerLabel,
+                    selected && styles.oxAnswerLabelSelected,
+                  ]}
+                >
+                  {option}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+    ))}
+    {errorMessage && <Text style={styles.oxError}>{errorMessage}</Text>}
+    <Pressable
+      style={[styles.oxSubmit, (!allAnswered || submitting) && styles.buttonDisabled]}
+      disabled={!allAnswered || submitting}
+      onPress={onSubmit}
+    >
+      {submitting ? (
+        <ActivityIndicator color="#fff" />
+      ) : (
+        <Text style={styles.oxSubmitText}>분석 시작</Text>
+      )}
+    </Pressable>
+    <Pressable style={styles.oxBack} onPress={onBack}>
+      <Text style={styles.oxBackText}>리포트로 돌아가기</Text>
+    </Pressable>
+  </View>
+);
+
 const ReportView = ({
   data,
   onRestart,
+  onOpenOx,
+  oxCompleted,
 }: {
   data: ReportData;
   onRestart: () => void;
+  onOpenOx: () => void;
+  oxCompleted: boolean;
 }) => (
   <View style={styles.reportCard}>
     <Text style={styles.reportTitle}>1차 피부 리포트</Text>
@@ -706,6 +989,16 @@ const ReportView = ({
       ))}
     </View>
 
+    <Pressable
+      style={[styles.reportOxButton, oxCompleted && styles.buttonDisabled]}
+      onPress={onOpenOx}
+      disabled={oxCompleted}
+    >
+      <Text style={styles.reportOxText}>
+        {oxCompleted ? "OX 응답이 저장되었습니다" : "생활 습관 OX 입력하기"}
+      </Text>
+    </Pressable>
+
     <Pressable style={styles.reportRestart} onPress={onRestart}>
       <Text style={styles.reportRestartText}>새로운 촬영 시작</Text>
     </Pressable>
@@ -728,21 +1021,35 @@ const CheekGuideOverlay = () => (
 
 const buildReportFromQuality = (
   states: StepState[],
-  sessionId: string | null
+  sessionId: string | null,
+  oxAnswers: Record<string, OXAnswer>
 ): ReportData => {
   const baseQuality = states[0]?.quality;
   const cheekQuality = states[1]?.quality;
 
-  const summary =
-    baseQuality?.passed && cheekQuality?.passed
-      ? "전반적으로 피부는 안정적으로 촬영되었고, 볼 부위 결이 조금 거칠게 느껴질 수 있어요."
-      : !baseQuality?.passed
-        ? "기준 촬영이 조금 멀게 촬영되어 얼굴 전체 톤을 다시 확인하면 좋아요."
-        : "볼 클로즈업이 다소 멀어 결이 흐릿하게 분석될 수 있습니다.";
+  const sensitive = oxAnswers["sensitive_skin"] === "O";
+  const sunscreen = oxAnswers["daily_sunscreen"] === "O";
+  const frequentMakeup = oxAnswers["frequent_makeup"] === "O";
+  const recentTrouble = oxAnswers["recent_skin_trouble"] === "O";
+  const oily = oxAnswers["oiliness_high"] === "O";
 
-  const highlight = cheekQuality?.passed
-    ? "볼 피부 결은 평균 범위 안쪽이지만 보습 후 재측정을 권장합니다."
-    : "볼 피부 결 분석을 위해 조금 더 가까운 촬영이 필요했어요.";
+  const summaryParts = [] as string[];
+  if (baseQuality?.passed) {
+    summaryParts.push("기준 촬영이 안정적으로 확보되어 전체 피부 톤을 읽을 수 있었어요.");
+  } else {
+    summaryParts.push("기준 촬영 정보가 다소 제한적이라 얼굴 전체 톤은 보수적으로 해석합니다.");
+  }
+  if (recentTrouble) {
+    summaryParts.push("최근 트러블이 있다고 답해주셔서 해당 부위에 자극 완화 팁을 포함했어요.");
+  }
+
+  const summary = summaryParts.join(" ") || "촬영이 정상적으로 완료되었습니다.";
+
+  const highlight = sensitive
+    ? "예민한 피부 특성이 있어 진정 케어를 함께 권장합니다."
+    : cheekQuality?.passed
+      ? "볼 피부 결은 평균 범위 안쪽이지만 보습 후 재측정을 권장합니다."
+      : "볼 피부 결 분석을 위해 조금 더 가까운 촬영이 필요했어요.";
 
   const items: ReportItem[] = [
     {
@@ -752,16 +1059,20 @@ const buildReportFromQuality = (
         ? "볼 피부 결이 비교적 균일하게 촬영되었습니다."
         : "볼 부위가 흐릿해 결이 거칠게 인식될 수 있어요.",
       comparison: cheekQuality?.passed
-        ? "동연령 평균 대비 보통"
+        ? oily
+          ? "유분이 많아 결이 조금 두꺼워질 수 있음"
+          : "동연령 평균 대비 보통"
         : "평균 대비 약간 낮음",
-      status: cheekQuality?.passed ? "보통" : "주의",
+      status: cheekQuality?.passed && !oily ? "보통" : "주의",
     },
     {
       id: "pore",
       title: "모공",
-      description: "T존 모공 분포가 일정하며 급격한 확장은 보이지 않습니다.",
-      comparison: "평균 대비 약간 촘촘",
-      status: "좋음",
+      description: frequentMakeup
+        ? "메이크업 빈도가 높아 모공 케어 메시지를 강화했습니다."
+        : "T존 모공 분포가 일정하며 급격한 확장은 보이지 않습니다.",
+      comparison: frequentMakeup ? "클렌징 필요성이 다소 높음" : "평균 대비 약간 촘촘",
+      status: frequentMakeup ? "주의" : "좋음",
     },
     {
       id: "elasticity",
@@ -775,22 +1086,30 @@ const buildReportFromQuality = (
     {
       id: "sagging",
       title: "처짐",
-      description: "광대 아래 영역의 톤 변화가 크지 않아 아직 큰 처짐 징후는 보이지 않습니다.",
-      comparison: "동연령 대비 안정적",
+      description: sensitive
+        ? "예민한 피부 특성을 고려해 처짐 코멘트를 완만하게 제시합니다."
+        : "광대 아래 영역의 톤 변화가 크지 않아 아직 큰 처짐 징후는 보이지 않습니다.",
+      comparison: sensitive ? "자극에 따라 변동 가능" : "동연령 대비 안정적",
       status: "좋음",
     },
     {
       id: "wrinkle",
       title: "주름",
-      description: "표정선이 선명하게 잡히지 않아 현재는 미세 주름 수준으로 보입니다.",
-      comparison: "평균 대비 양호",
-      status: "좋음",
+      description: sunscreen
+        ? "자외선 차단 습관 덕분에 주름 진행이 완만할 가능성이 높습니다."
+        : "자외선 차단이 부족해 미세 주름이 빠르게 늘 수 있으니 주의를 권장합니다.",
+      comparison: sunscreen ? "평균 대비 양호" : "평균 대비 다소 민감",
+      status: sunscreen ? "좋음" : "주의",
     },
   ];
 
   const tips = [
-    "볼 집중 보습 후 1주일 내 재촬영하면 변화를 더 잘 볼 수 있어요.",
-    "기준 촬영 시 턱과 이마가 모두 원에 닿도록 맞추면 AI 분석이 더 정교해집니다.",
+    recentTrouble
+      ? "트러블 부위는 강한 각질 제거 대신 진정 앰플을 사용해 주세요."
+      : "볼 집중 보습 후 1주일 내 재촬영하면 변화를 더 잘 볼 수 있어요.",
+    sunscreen
+      ? "자외선 차단제 사용을 꾸준히 유지하면 탄력 항목이 안정적으로 유지됩니다."
+      : "외출 15분 전에 자외선 차단제를 꼭 바르는 습관을 들여 주세요.",
   ];
 
   return {
@@ -1080,6 +1399,81 @@ const styles = StyleSheet.create({
     textAlign: "right",
     color: "#78738C",
   },
+  oxCard: {
+    backgroundColor: "white",
+    borderRadius: 20,
+    padding: 20,
+    gap: 16,
+  },
+  oxTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#1f1b2e",
+  },
+  oxSubtitle: {
+    color: "#4B3A63",
+    fontSize: 13,
+  },
+  oxQuestion: {
+    borderWidth: 1,
+    borderColor: "#E4DDF7",
+    borderRadius: 16,
+    padding: 14,
+    gap: 8,
+  },
+  oxQuestionTitle: {
+    fontWeight: "600",
+    color: "#1f1b2e",
+  },
+  oxQuestionDesc: {
+    color: "#6A4BA1",
+    fontSize: 12,
+  },
+  oxAnswerRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  oxAnswerButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#D6C7F1",
+    borderRadius: 999,
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  oxAnswerSelected: {
+    backgroundColor: "#A884CC",
+    borderColor: "#A884CC",
+  },
+  oxAnswerLabel: {
+    fontWeight: "600",
+    color: "#6A4BA1",
+  },
+  oxAnswerLabelSelected: {
+    color: "white",
+  },
+  oxError: {
+    color: "#C0392B",
+    fontSize: 12,
+  },
+  oxSubmit: {
+    backgroundColor: "#1f1b2e",
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  oxSubmitText: {
+    color: "white",
+    fontWeight: "700",
+  },
+  oxBack: {
+    marginTop: 8,
+    alignItems: "center",
+  },
+  oxBackText: {
+    color: "#6A4BA1",
+    fontWeight: "600",
+  },
   reportCard: {
     backgroundColor: "white",
     borderRadius: 20,
@@ -1155,6 +1549,16 @@ const styles = StyleSheet.create({
   reportTip: {
     color: "#4B3A63",
     fontSize: 13,
+  },
+  reportOxButton: {
+    backgroundColor: "#F3E9FF",
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  reportOxText: {
+    color: "#5C3AA1",
+    fontWeight: "700",
   },
   reportRestart: {
     backgroundColor: "#1f1b2e",
