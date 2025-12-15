@@ -17,8 +17,12 @@ import {
   type ReportItem,
 } from "@/types/report";
 import { buildServerUrl } from "@/lib/server";
+import { type PersonalColorExtras } from "@/lib/personal-color";
+
+type ReportType = "analysis" | "personal_color";
 
 type ReportDetailPayload = {
+  type: ReportType;
   sessionId: string;
   createdAt: string | null;
   thumbnail: string | null;
@@ -28,6 +32,7 @@ type ReportDetailPayload = {
   tips: string[];
   needs: NeedEntry[];
   recommendations: ProductRecommendation[];
+  extras?: PersonalColorExtras | null;
 };
 
 type ApiResponse = ReportDetailPayload & { error?: string };
@@ -37,14 +42,21 @@ const SKELETON_PLACEHOLDER =
 
 export default function ReportDetailScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ id?: string; thumbnail?: string; createdAt?: string }>();
+  const params = useLocalSearchParams<{ id?: string; thumbnail?: string; createdAt?: string; type?: string }>();
   const sessionId = params.id && !Array.isArray(params.id) ? params.id : null;
   const initialThumb = params.thumbnail && !Array.isArray(params.thumbnail) ? params.thumbnail : null;
   const initialDate = params.createdAt && !Array.isArray(params.createdAt) ? params.createdAt : null;
+  const typeParam = params.type && !Array.isArray(params.type) ? params.type : null;
+  const initialType: ReportType = typeParam === "personal_color" ? "personal_color" : "analysis";
 
   const [report, setReport] = useState<ReportDetailPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reportType, setReportType] = useState<ReportType>(initialType);
+
+  useEffect(() => {
+    setReportType(initialType);
+  }, [initialType, sessionId]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -57,13 +69,17 @@ export default function ReportDetailScreen() {
       try {
         setLoading(true);
         setError(null);
-        const response = await fetch(buildServerUrl(`/api/reports/${sessionId}`));
+        const query = reportType === "personal_color" ? "?type=personal_color" : "";
+        const response = await fetch(buildServerUrl(`/api/reports/${sessionId}${query}`));
         if (!response.ok) {
           throw new Error("리포트를 불러오지 못했습니다.");
         }
         const payload = (await response.json()) as ApiResponse;
         if ((payload as { error?: string }).error) {
           throw new Error((payload as { error: string }).error);
+        }
+        if ((payload.type === "personal_color" || payload.type === "analysis") && payload.type !== reportType) {
+          setReportType(payload.type);
         }
         setReport(payload);
       } catch (err) {
@@ -75,10 +91,11 @@ export default function ReportDetailScreen() {
     };
 
     fetchDetail();
-  }, [sessionId]);
+  }, [sessionId, reportType]);
 
   const heroImage = report?.thumbnail ?? initialThumb;
   const dateLabel = useMemo(() => formatDate(report?.createdAt ?? initialDate), [report?.createdAt, initialDate]);
+  const typeLabel = reportType === "personal_color" ? "퍼스널컬러 리포트" : "촬영 리포트";
 
   const renderBody = () => {
     if (loading) {
@@ -112,6 +129,7 @@ export default function ReportDetailScreen() {
         ) : (
           <View style={[styles.detailImage, styles.detailPlaceholder]} />
         )}
+        <Text style={styles.typeLabel}>{typeLabel}</Text>
         <Text style={styles.dateLabel}>{dateLabel}</Text>
         <Text style={styles.headline}>{report.highlight}</Text>
         <Text style={styles.summary}>{report.summary}</Text>
@@ -138,9 +156,14 @@ export default function ReportDetailScreen() {
 const ReportCard = ({ data }: { data: ReportDetailPayload }) => (
   <View style={styles.reportCard}>
     <Text style={styles.reportTitle}>세션 요약</Text>
-    <Text style={styles.reportSession}>세션 ID: {data.sessionId}</Text>
+    <Text style={styles.reportSession}>
+      {data.type === "personal_color" ? "기록 ID" : "세션 ID"}: {data.sessionId}
+    </Text>
     <Text style={styles.reportSummary}>{data.summary}</Text>
     <Text style={styles.reportHighlight}>{data.highlight}</Text>
+
+    {data.type === "personal_color" && <PersonalColorExtrasView extras={data.extras} />}
+
     {data.needs.length > 0 && <NeedFocusList needs={data.needs} />}
 
     {data.recommendations.length > 0 && (
@@ -179,6 +202,43 @@ const ReportCard = ({ data }: { data: ReportDetailPayload }) => (
     </View>
   </View>
 );
+
+const PersonalColorExtrasView = ({ extras }: { extras?: PersonalColorExtras | null }) => {
+  if (!extras) return null;
+  return (
+    <View style={styles.personalCard}>
+      <Text style={styles.personalTone}>{extras.toneLabel}</Text>
+      <View style={styles.personalPaletteRow}>
+        {extras.palette.map((color) => (
+          <View key={color} style={[styles.personalPaletteChip, { backgroundColor: color }]} />
+        ))}
+      </View>
+      <View style={styles.personalStory}>
+        {extras.storyline.map((line) => (
+          <Text key={line} style={styles.personalStoryText}>
+            {line}
+          </Text>
+        ))}
+      </View>
+      {extras.sliderDetails?.length > 0 && (
+        <View style={styles.personalSliderBlock}>
+          {extras.sliderDetails.map((slider) => (
+            <View key={slider.id} style={styles.personalSliderRow}>
+              <Text style={styles.personalSliderLabel}>{slider.label}</Text>
+              <View style={styles.personalSliderTrack}>
+                <View style={[styles.personalSliderFill, { width: `${slider.value * 100}%` }]} />
+              </View>
+              <View style={styles.personalSliderCaption}>
+                <Text style={styles.personalSliderText}>{slider.leftLabel}</Text>
+                <Text style={styles.personalSliderText}>{slider.rightLabel}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+};
 
 const NeedFocusList = ({ needs }: { needs: NeedEntry[] }) => (
   <View style={styles.needsCard}>
@@ -302,6 +362,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
+  typeLabel: {
+    textAlign: "center",
+    color: "#A884CC",
+    fontWeight: "600",
+    marginTop: 12,
+  },
   dateLabel: {
     marginTop: 20,
     textAlign: "center",
@@ -347,6 +413,62 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#C0392B",
     fontWeight: "600",
+  },
+  personalCard: {
+    backgroundColor: "#F6F1FC",
+    borderRadius: 18,
+    padding: 16,
+    gap: 12,
+  },
+  personalTone: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#A884CC",
+    textAlign: "center",
+  },
+  personalPaletteRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  personalPaletteChip: {
+    flex: 1,
+    height: 36,
+    borderRadius: 12,
+  },
+  personalStory: {
+    gap: 4,
+  },
+  personalStoryText: {
+    color: "#4A4A55",
+    fontSize: 13,
+  },
+  personalSliderBlock: {
+    gap: 12,
+  },
+  personalSliderRow: {},
+  personalSliderLabel: {
+    fontSize: 14,
+    color: "#1F1F24",
+    marginBottom: 4,
+  },
+  personalSliderTrack: {
+    height: 8,
+    backgroundColor: "#E0D2F1",
+    borderRadius: 999,
+    overflow: "hidden",
+  },
+  personalSliderFill: {
+    height: "100%",
+    backgroundColor: "#A884CC",
+  },
+  personalSliderCaption: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 4,
+  },
+  personalSliderText: {
+    fontSize: 11,
+    color: "#6F6F73",
   },
   reportItemList: {
     gap: 12,

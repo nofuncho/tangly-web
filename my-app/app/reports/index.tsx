@@ -13,12 +13,15 @@ import { Image } from "expo-image";
 
 import { SERVER_BASE_URL, buildServerUrl } from "@/lib/server";
 
+type ArchiveType = "analysis" | "personal_color";
+
 type ArchiveItem = {
   id: string;
   createdAt: string | null;
   summary: string;
   headline: string;
   thumbnail: string | null;
+  type: ArchiveType;
 };
 
 type ArchiveResponse = {
@@ -109,6 +112,7 @@ export default function ReportArchiveScreen() {
                   id: report.id,
                   thumbnail: report.thumbnail ?? "",
                   createdAt: report.createdAt ?? "",
+                  type: report.type,
                 },
               })
             }
@@ -137,6 +141,7 @@ const ReportCard = ({
   onPress: (item: ArchiveItem) => void;
 }) => {
   const dateLabel = useMemo(() => formatDate(item.createdAt), [item.createdAt]);
+  const typeLabel = item.type === "personal_color" ? "퍼스널컬러" : "촬영 리포트";
 
   return (
     <Pressable style={styles.card} onPress={() => onPress(item)}>
@@ -154,6 +159,7 @@ const ReportCard = ({
           <View style={styles.thumbnailPlaceholder} />
         )}
         <View style={styles.thumbnailOverlay}>
+          <Text style={styles.typeBadge}>{typeLabel}</Text>
           <Text style={styles.thumbnailDate}>{dateLabel}</Text>
         </View>
       </View>
@@ -243,16 +249,29 @@ const styles = StyleSheet.create({
   },
   thumbnailOverlay: {
     position: "absolute",
-    top: 8,
     left: 8,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    right: 8,
+    bottom: 8,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  typeBadge: {
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "600",
   },
   thumbnailDate: {
     color: "#FFFFFF",
     fontSize: 11,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.45)",
   },
   cardBody: {
     paddingHorizontal: 12,

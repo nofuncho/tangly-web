@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import {
   buildRecommendationPayload,
@@ -22,15 +22,23 @@ export async function GET(
     );
   }
 
+  const url = new URL(req.url ?? "http://localhost");
   const sessionId = params?.sessionId ?? extractSessionIdFromUrl(req.url ?? "");
   if (!sessionId) {
     return NextResponse.json({ error: "Session id is required" }, { status: 400 });
   }
 
+  const type = url.searchParams.get("type") === "personal_color" ? "personal_color" : "analysis";
+
   try {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
     });
+
+    if (type === "personal_color") {
+      const response = await fetchPersonalColorReport(supabase, sessionId);
+      return response;
+    }
 
     const { data: session, error: sessionError } = await supabase
       .from("analysis_sessions")
@@ -82,6 +90,7 @@ export async function GET(
     const thumbnail = selectThumbnail((photosData ?? []) as PhotoRow[]);
 
     return NextResponse.json({
+      type: "analysis",
       sessionId,
       createdAt: session.created_at,
       thumbnail,
@@ -93,6 +102,34 @@ export async function GET(
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
+
+const fetchPersonalColorReport = async (supabase: SupabaseClient, reportId: string) => {
+  const { data, error } = await supabase
+    .from("personal_color_reports")
+    .select("id, created_at, session_label, thumbnail_url, result_summary, result_headline, payload")
+    .eq("id", reportId)
+    .single();
+
+  if (error || !data) {
+    return NextResponse.json({ error: "Report not found" }, { status: 404 });
+  }
+
+  const payload = (data.payload ?? {}) as Record<string, unknown>;
+
+  return NextResponse.json({
+    type: "personal_color",
+    sessionId: (data.session_label as string | null) ?? data.id,
+    createdAt: data.created_at,
+    thumbnail: data.thumbnail_url,
+    summary: (payload.summary as string) ?? data.result_summary ?? "퍼스널 컬러 요약",
+    highlight: (payload.highlight as string) ?? data.result_headline ?? "퍼스널 컬러 결과",
+    items: (payload.items as unknown[]) ?? [],
+    tips: (payload.tips as string[]) ?? [],
+    needs: (payload.needs as unknown[]) ?? [],
+    recommendations: (payload.recommendations as unknown[]) ?? [],
+    extras: payload.extras ?? null,
+  });
+};
 
 const selectThumbnail = (photos: PhotoRow[]) => {
   if (!photos.length) {

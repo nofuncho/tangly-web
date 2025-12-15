@@ -14,6 +14,14 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const DEFAULT_LIMIT = 12;
 const MAX_LIMIT = 36;
 
+type PersonalColorRow = {
+  id: string;
+  created_at: string | null;
+  thumbnail_url: string | null;
+  result_summary?: string | null;
+  result_headline?: string | null;
+};
+
 export async function GET(req: Request) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return NextResponse.json(
@@ -44,91 +52,132 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: sessionError.message }, { status: 500 });
     }
 
-    if (!sessions?.length) {
-      return NextResponse.json({ reports: [] });
-    }
+    const sessionIds = (sessions ?? []).map((session) => session.id);
 
-    const sessionIds = sessions.map((session) => session.id);
+    let photosBySession = new Map<string, PhotoRow[]>();
+    let oxBySession = new Map<string, OxResponseRow[]>();
+    const products: ProductRow[] = [];
 
-    const { data: photosData, error: photosError } = await supabase
-      .from("photos")
-      .select("id, session_id, shot_type, focus_area, image_url, created_at")
-      .in("session_id", sessionIds);
+    if (sessionIds.length) {
+      const [{ data: photosData, error: photosError }, { data: oxData, error: oxError }, { data: productsData, error: productError }] =
+        await Promise.all([
+          supabase
+            .from("photos")
+            .select("id, session_id, shot_type, focus_area, image_url, created_at")
+            .in("session_id", sessionIds),
+          supabase
+            .from("ox_responses")
+            .select("session_id, question_key, answer, created_at")
+            .in("session_id", sessionIds),
+          supabase
+            .from("products")
+            .select("id, name, brand, category, key_ingredients, note, image_url")
+            .limit(80),
+        ]);
 
-    if (photosError) {
-      console.error("reports photos error", photosError);
-      return NextResponse.json({ error: photosError.message }, { status: 500 });
-    }
-
-    const { data: oxData, error: oxError } = await supabase
-      .from("ox_responses")
-      .select("session_id, question_key, answer, created_at")
-      .in("session_id", sessionIds);
-
-    if (oxError) {
-      console.error("reports ox error", oxError);
-      return NextResponse.json({ error: oxError.message }, { status: 500 });
-    }
-
-    const { data: productsData, error: productError } = await supabase
-      .from("products")
-      .select("id, name, brand, category, key_ingredients, note, image_url")
-      .limit(80);
-
-    if (productError) {
-      console.error("reports product error", productError);
-      return NextResponse.json({ error: productError.message }, { status: 500 });
-    }
-
-    const photosBySession = new Map<string, PhotoRow[]>();
-    (photosData ?? []).forEach((photo) => {
-      if (!photo?.session_id) return;
-      const bucket = photosBySession.get(photo.session_id) ?? [];
-      bucket.push(photo as PhotoRow);
-      photosBySession.set(photo.session_id, bucket);
-    });
-
-    const oxBySession = new Map<string, OxResponseRow[]>();
-    (oxData ?? []).forEach((entry) => {
-      if (!entry?.session_id) return;
-      const bucket = oxBySession.get(entry.session_id) ?? [];
-      bucket.push(entry as OxResponseRow);
-      oxBySession.set(entry.session_id, bucket);
-    });
-
-    const products: ProductRow[] = (productsData ?? []) as ProductRow[];
-
-    const reports = sessions.flatMap((session) => {
-      const sessionPhotos = photosBySession.get(session.id) ?? [];
-      const sessionOx = oxBySession.get(session.id) ?? [];
-      const payload = buildRecommendationPayload({
-        sessionId: session.id,
-        photos: sessionPhotos,
-        oxResponses: sessionOx,
-        products,
-      });
-
-      const thumbnail = selectThumbnail(sessionPhotos);
-      if (!thumbnail) {
-        return [];
+      if (photosError) {
+        console.error("reports photos error", photosError);
+        return NextResponse.json({ error: photosError.message }, { status: 500 });
+      }
+      if (oxError) {
+        console.error("reports ox error", oxError);
+        return NextResponse.json({ error: oxError.message }, { status: 500 });
+      }
+      if (productError) {
+        console.error("reports product error", productError);
+        return NextResponse.json({ error: productError.message }, { status: 500 });
       }
 
-      return [{
-        id: session.id,
-        createdAt: session.created_at,
-        summary: payload.summary,
-        headline: payload.highlight,
-        thumbnail,
-      }];
+      photosBySession = groupBySession(photosData ?? []);
+      oxBySession = groupOxBySession(oxData ?? []);
+      products.push(...((productsData ?? []) as ProductRow[]));
+    }
+
+    const analysisReports =
+      sessions?.flatMap((session) => {
+        const sessionPhotos = photosBySession.get(session.id) ?? [];
+        const sessionOx = oxBySession.get(session.id) ?? [];
+        const payload = buildRecommendationPayload({
+          sessionId: session.id,
+          photos: sessionPhotos,
+          oxResponses: sessionOx,
+          products,
+        });
+
+        const thumbnail = selectThumbnail(sessionPhotos);
+        if (!thumbnail) {
+          return [];
+        }
+
+        return [
+          {
+            id: session.id,
+            createdAt: session.created_at,
+            summary: payload.summary,
+            headline: payload.highlight,
+            thumbnail,
+            type: "analysis" as const,
+          },
+        ];
+      }) ?? [];
+
+    const { data: personalRows, error: personalError } = await supabase
+      .from("personal_color_reports")
+      .select("id, created_at, thumbnail_url, result_summary, result_headline")
+      .order("created_at", { ascending: false })
+      .limit(limit * 2);
+
+    if (personalError) {
+      console.error("personal-color list error", personalError);
+      return NextResponse.json({ error: personalError.message }, { status: 500 });
+    }
+
+    const personalReports = ((personalRows ?? []) as PersonalColorRow[])
+      .filter((row) => row.thumbnail_url)
+      .map((row) => ({
+        id: row.id,
+        createdAt: row.created_at,
+        summary: row.result_summary ?? "퍼스널컬러 리포트",
+        headline: row.result_headline ?? "퍼스널컬러 결과",
+        thumbnail: row.thumbnail_url,
+        type: "personal_color" as const,
+      }));
+
+    const combined = [...analysisReports, ...personalReports].sort((a, b) => {
+      const left = a.createdAt ? Date.parse(a.createdAt) : 0;
+      const right = b.createdAt ? Date.parse(b.createdAt) : 0;
+      return right - left;
     });
 
-    return NextResponse.json({ reports });
+    return NextResponse.json({ reports: combined.slice(0, limit) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Server error";
     console.error("reports list error", error);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
+
+const groupBySession = (photos: PhotoRow[]) => {
+  const map = new Map<string, PhotoRow[]>();
+  photos.forEach((photo) => {
+    if (!photo?.session_id) return;
+    const bucket = map.get(photo.session_id) ?? [];
+    bucket.push(photo);
+    map.set(photo.session_id, bucket);
+  });
+  return map;
+};
+
+const groupOxBySession = (rows: OxResponseRow[]) => {
+  const map = new Map<string, OxResponseRow[]>();
+  rows.forEach((entry) => {
+    if (!entry?.session_id) return;
+    const bucket = map.get(entry.session_id) ?? [];
+    bucket.push(entry);
+    map.set(entry.session_id, bucket);
+  });
+  return map;
+};
 
 const selectThumbnail = (photos: PhotoRow[]) => {
   if (!photos.length) {

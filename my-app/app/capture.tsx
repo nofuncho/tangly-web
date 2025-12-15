@@ -11,9 +11,8 @@ import {
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { SafeAreaView } from "react-native-safe-area-context";
-import * as ImageManipulator from "expo-image-manipulator";
-
 import { SERVER_BASE_URL, UPLOAD_API_URL } from "@/lib/server";
+import { optimizePhoto } from "@/lib/photo-utils";
 
 type FlowStage = "intro" | "capture" | "ox" | "analyzing" | "report";
 type CaptureState = "idle" | "uploading" | "completed" | "error";
@@ -186,27 +185,6 @@ const isTransientNetworkError = (error: unknown) => {
     return /Network request failed|Failed to fetch/i.test(error.message);
   }
   return false;
-};
-
-const optimizePhoto = async <T extends { uri: string; width?: number; height?: number }>(
-  photo: T
-): Promise<T> => {
-  try {
-    const manipulated = await ImageManipulator.manipulateAsync(
-      photo.uri,
-      [{ resize: { width: 1080 } }],
-      { compress: 0.65, format: ImageManipulator.SaveFormat.JPEG }
-    );
-    return {
-      ...photo,
-      uri: manipulated.uri,
-      width: manipulated.width,
-      height: manipulated.height,
-    };
-  } catch (error) {
-    console.warn("Failed to optimize photo", error);
-    return photo;
-  }
 };
 
 export default function StepBasedCaptureScreen() {

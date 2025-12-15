@@ -17,7 +17,7 @@ const COLORS = {
 const FEATURE_ITEMS: FeatureItem[] = [
   { key: "capture", label: "피부촬영", icon: "lens", action: "capture" },
   { key: "eye", label: "눈주름검사", icon: "eye" },
-  { key: "color", label: "퍼스널컬러", icon: "palette" },
+  { key: "color", label: "퍼스널컬러", icon: "palette", action: "personalColor" },
   { key: "report", label: "리포트", icon: "report", action: "reports" },
   { key: "product", label: "찰떡 제품", icon: "product" },
 ];
@@ -42,7 +42,7 @@ const TAB_ITEMS: TabItem[] = [
   { key: "mypage", label: "마이페이지", icon: "mypage" },
 ];
 
-type FeatureAction = "capture" | "reports";
+type FeatureAction = "capture" | "reports" | "personalColor";
 type FeatureIconType = "lens" | "eye" | "palette" | "report" | "product";
 type FeatureItem = {
   key: string;
@@ -68,6 +68,10 @@ export default function HomeScreen() {
     router.push("/capture");
   };
 
+  const handlePersonalColor = () => {
+    router.push("/personal-color");
+  };
+
   const handleOpenReports = () => {
     router.push("/reports");
   };
@@ -76,6 +80,10 @@ export default function HomeScreen() {
     if (!action) return;
     if (action === "capture") {
       handleStartCapture();
+      return;
+    }
+    if (action === "personalColor") {
+      handlePersonalColor();
       return;
     }
     if (action === "reports") {
