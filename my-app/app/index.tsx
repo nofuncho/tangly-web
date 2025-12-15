@@ -15,10 +15,10 @@ const COLORS = {
 };
 
 const FEATURE_ITEMS: FeatureItem[] = [
-  { key: "capture", label: "피부촬영", icon: "lens", interactive: true },
+  { key: "capture", label: "피부촬영", icon: "lens", action: "capture" },
   { key: "eye", label: "눈주름검사", icon: "eye" },
   { key: "color", label: "퍼스널컬러", icon: "palette" },
-  { key: "report", label: "리포트", icon: "report" },
+  { key: "report", label: "리포트", icon: "report", action: "reports" },
   { key: "product", label: "찰떡 제품", icon: "product" },
 ];
 
@@ -37,25 +37,28 @@ const CONTENT_CARDS = [
 
 const TAB_ITEMS: TabItem[] = [
   { key: "home", label: "홈", icon: "home", active: true },
-  { key: "report", label: "리포트", icon: "report" },
+  { key: "report", label: "리포트", icon: "report", action: "reports" },
   { key: "deal", label: "최저가", icon: "deal" },
   { key: "mypage", label: "마이페이지", icon: "mypage" },
 ];
 
+type FeatureAction = "capture" | "reports";
 type FeatureIconType = "lens" | "eye" | "palette" | "report" | "product";
 type FeatureItem = {
   key: string;
   label: string;
   icon: FeatureIconType;
-  interactive?: boolean;
+  action?: FeatureAction;
 };
 
+type TabAction = FeatureAction;
 type TabIconType = "home" | "report" | "deal" | "mypage";
 type TabItem = {
   key: string;
   label: string;
   icon: TabIconType;
   active?: boolean;
+  action?: TabAction;
 };
 
 export default function HomeScreen() {
@@ -63,6 +66,28 @@ export default function HomeScreen() {
 
   const handleStartCapture = () => {
     router.push("/capture");
+  };
+
+  const handleOpenReports = () => {
+    router.push("/reports");
+  };
+
+  const handleFeaturePress = (action?: FeatureAction) => {
+    if (!action) return;
+    if (action === "capture") {
+      handleStartCapture();
+      return;
+    }
+    if (action === "reports") {
+      handleOpenReports();
+    }
+  };
+
+  const handleTabPress = (action?: TabAction) => {
+    if (!action) return;
+    if (action === "reports") {
+      handleOpenReports();
+    }
   };
 
   return (
@@ -117,8 +142,8 @@ export default function HomeScreen() {
                   key={item.key}
                   style={styles.featureItem}
                   accessibilityLabel={item.label}
-                  accessibilityRole={item.interactive ? "button" : undefined}
-                  onPress={item.interactive ? handleStartCapture : undefined}
+                  accessibilityRole={item.action ? "button" : undefined}
+                  onPress={() => handleFeaturePress(item.action)}
                 >
                   <View style={styles.featureIconWrapper}>
                     <FeatureIcon type={item.icon} />
@@ -145,14 +170,17 @@ export default function HomeScreen() {
 
         <View style={styles.bottomTabWrapper}>
           {TAB_ITEMS.map((tab) => (
-            <View key={tab.key} style={styles.tabItem}>
+            <Pressable
+              key={tab.key}
+              style={styles.tabItem}
+              accessibilityRole={tab.action ? "button" : undefined}
+              onPress={() => handleTabPress(tab.action)}
+            >
               <TabIcon type={tab.icon} active={tab.active} />
-              <Text
-                style={tab.active ? styles.tabLabelActive : styles.tabLabel}
-              >
+              <Text style={tab.active ? styles.tabLabelActive : styles.tabLabel}>
                 {tab.label}
               </Text>
-            </View>
+            </Pressable>
           ))}
         </View>
       </View>

@@ -1,12 +1,15 @@
 export type PhotoRow = {
   id: string;
+  session_id?: string | null;
   shot_type?: string | null;
   focus_area?: string | null;
   image_url?: string | null;
+  image_path?: string | null;
   created_at?: string | null;
 };
 
 export type OxResponseRow = {
+  session_id?: string | null;
   question_key: string;
   answer: string;
   created_at?: string | null;

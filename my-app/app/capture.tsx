@@ -11,6 +11,9 @@ import {
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { SafeAreaView } from "react-native-safe-area-context";
+import * as ImageManipulator from "expo-image-manipulator";
+
+import { SERVER_BASE_URL, UPLOAD_API_URL } from "@/lib/server";
 
 type FlowStage = "intro" | "capture" | "ox" | "analyzing" | "report";
 type CaptureState = "idle" | "uploading" | "completed" | "error";
@@ -102,23 +105,6 @@ type OXQuestion = {
   description: string;
 };
 
-const UPLOAD_API_URL = process.env.EXPO_PUBLIC_UPLOAD_API_URL ?? "";
-const SERVER_BASE_URL = (() => {
-  const envBase = process.env.EXPO_PUBLIC_SERVER_BASE_URL?.replace(/\/$/, "");
-  if (envBase) {
-    return envBase;
-  }
-  if (UPLOAD_API_URL) {
-    try {
-      const url = new URL(UPLOAD_API_URL);
-      return `${url.protocol}//${url.host}`;
-    } catch {
-      return "";
-    }
-  }
-  return "";
-})();
-
 const STEP_CONFIGS: StepConfig[] = [
   {
     id: "base",
@@ -200,6 +186,27 @@ const isTransientNetworkError = (error: unknown) => {
     return /Network request failed|Failed to fetch/i.test(error.message);
   }
   return false;
+};
+
+const optimizePhoto = async <T extends { uri: string; width?: number; height?: number }>(
+  photo: T
+): Promise<T> => {
+  try {
+    const manipulated = await ImageManipulator.manipulateAsync(
+      photo.uri,
+      [{ resize: { width: 1080 } }],
+      { compress: 0.65, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    return {
+      ...photo,
+      uri: manipulated.uri,
+      width: manipulated.width,
+      height: manipulated.height,
+    };
+  } catch (error) {
+    console.warn("Failed to optimize photo", error);
+    return photo;
+  }
 };
 
 export default function StepBasedCaptureScreen() {
@@ -593,10 +600,11 @@ export default function StepBasedCaptureScreen() {
         message: "촬영 데이터를 확인하는 중입니다...",
       });
 
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.95,
+      const captured = await cameraRef.current.takePictureAsync({
+        quality: 1,
         skipProcessing: true,
       });
+      const photo = await optimizePhoto(captured);
 
       const quality = evaluateCaptureQuality(photo, currentStep);
       updateStepState(currentStepIndex, {
