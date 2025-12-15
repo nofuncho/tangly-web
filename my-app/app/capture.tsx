@@ -149,29 +149,29 @@ const ANALYSIS_SEQUENCE = [
 
 const OX_QUESTIONS: OXQuestion[] = [
   {
-    key: "sensitive_skin",
-    title: "최근 2주 동안 피부가 예민하거나 따가웠나요?",
+    key: "tight_after_wash",
+    title: "세안 후 당김이 느껴지나요?",
+    description: "O: 자주 느껴진다 / X: 거의 없다",
+  },
+  {
+    key: "makeup_cakey",
+    title: "화장이 자주 들뜨거나 갈라지나요?",
     description: "O: 자주 그렇다 / X: 거의 없다",
   },
   {
-    key: "frequent_makeup",
-    title: "평소 메이크업을 자주 하나요?",
-    description: "O: 주 4회 이상 / X: 주 3회 이하",
+    key: "elasticity_change",
+    title: "탄력이 예전 같지 않다고 느끼나요?",
+    description: "O: 예전보다 떨어진 것 같다 / X: 큰 변화 없다",
   },
   {
-    key: "daily_sunscreen",
-    title: "외출 시 자외선 차단제를 항상 바르나요?",
-    description: "O: 거의 매번 사용 / X: 가끔 또는 거의 사용하지 않음",
+    key: "skin_sensitive_now",
+    title: "피부가 요즘 예민해졌다고 느끼나요?",
+    description: "O: 예민해졌다 / X: 평소와 비슷하다",
   },
   {
-    key: "recent_skin_trouble",
-    title: "최근 일주일 내 여드름/트러블이 있었나요?",
-    description: "O: 있다 / X: 없다",
-  },
-  {
-    key: "oiliness_high",
-    title: "피부 유분이 많은 편인가요?",
-    description: "O: 번들거림이 느껴진다 / X: 건조하거나 보통",
+    key: "no_recent_trouble",
+    title: "특별한 트러블은 없나요?",
+    description: "O: 크게 없다 / X: 가끔 생긴다",
   },
 ];
 
@@ -189,6 +189,18 @@ const createInitialOxAnswers = (): Record<string, OXAnswer> => (
     return acc;
   }, {} as Record<string, OXAnswer>)
 );
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTransientNetworkError = (error: unknown) => {
+  if (error instanceof TypeError) {
+    return true;
+  }
+  if (error instanceof Error) {
+    return /Network request failed|Failed to fetch/i.test(error.message);
+  }
+  return false;
+};
 
 export default function StepBasedCaptureScreen() {
   const cameraRef = useRef<CameraView>(null);
@@ -229,6 +241,18 @@ export default function StepBasedCaptureScreen() {
       analysisTimers.current.forEach((timer) => clearTimeout(timer));
     };
   }, []);
+
+  useEffect(() => {
+    startSession();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (permission?.granted && flowStage === "intro" && !sessionIdRef.current) {
+      startSession();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [permission?.granted]);
 
   const currentStep = STEP_CONFIGS[currentStepIndex];
   const currentState = stepStates[currentStepIndex];
@@ -592,7 +616,23 @@ export default function StepBasedCaptureScreen() {
         message: "촬영이 통과되었습니다. 업로드 중...",
       });
 
-      const result = await uploadViaApi(photo.uri, currentStep);
+      let result;
+      try {
+        result = await uploadViaApi(photo.uri, currentStep);
+      } catch (error) {
+        if (!isTransientNetworkError(error)) {
+          throw error;
+        }
+
+        updateStepState(currentStepIndex, {
+          message: "네트워크가 잠시 불안정해 한번 더 전송하고 있어요...",
+        });
+        setGlobalMessage("전송이 끊겨 잠깐 대기 후 다시 시도하는 중입니다.");
+        await wait(800);
+
+        result = await uploadViaApi(photo.uri, currentStep);
+      }
+
       const publicUrl =
         result?.publicUrl ?? result?.photo?.image_url ?? result?.photo?.image_url;
 
@@ -669,91 +709,19 @@ export default function StepBasedCaptureScreen() {
     });
   };
 
-  const heroButtonLabel =
-    flowStage === "intro"
-      ? "촬영 세션 시작"
-      : flowStage === "capture"
-        ? "세션 다시 시작하기"
-        : "새로운 세션 시작";
+  const isCaptureStage = flowStage === "capture" || flowStage === "intro";
+
+  if (isCaptureStage) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        {renderCamera()}
+      </SafeAreaView>
+    );
+  }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container}>
-        <View style={styles.heroCard}>
-          <Text style={styles.bannerTitle}>Tangly 촬영 가이드</Text>
-          <Text style={styles.bannerDescription}>
-            표준화된 두 단계 촬영으로 AI 분석에 필요한 이미지를 확보합니다.
-          </Text>
-          <Pressable
-            style={({ pressed }) => [
-              styles.ctaButton,
-              pressed && styles.ctaButtonPressed,
-            ]}
-            onPress={startSession}
-          >
-            <Text style={styles.ctaLabel}>{heroButtonLabel}</Text>
-          </Pressable>
-          <Text style={styles.heroHint}>{globalMessage}</Text>
-        </View>
-
-        {flowStage === "capture" && (
-          <View style={styles.stepContainer}>
-            <StepIndicator
-              steps={STEP_CONFIGS}
-              stepStates={stepStates}
-              currentIndex={currentStepIndex}
-            />
-            <View style={styles.stepHeader}>
-              <Text style={styles.stepTitle}>{currentStep.title}</Text>
-              <Text style={styles.stepDescription}>{currentStep.description}</Text>
-            </View>
-
-            {renderCamera()}
-
-            <View style={styles.statusCard}>
-              <Text
-                style={[
-                  styles.statusLabel,
-                  currentState.status === "error" && styles.statusError,
-                ]}
-              >
-                {currentState.message}
-              </Text>
-              {currentState.quality && (
-                <Text style={styles.statusTip}>{currentState.quality.tip}</Text>
-              )}
-            </View>
-
-            {currentState.uploadUrl && (
-              <View style={styles.previewCard}>
-                <Text style={styles.previewTitle}>업로드된 사진</Text>
-                <Image
-                  source={{ uri: currentState.previewUri ?? currentState.uploadUrl }}
-                  style={styles.previewImage}
-                />
-                <Text style={styles.previewHint}>shot_type: {currentStep.shotType}</Text>
-                {currentState.uploadUrl && (
-                  <Text style={styles.previewUrl} numberOfLines={1}>
-                    {currentState.uploadUrl}
-                  </Text>
-                )}
-              </View>
-            )}
-
-            {currentStepIndex < STEP_CONFIGS.length - 1 && (
-              <Pressable
-                disabled={!isCompleted}
-                onPress={moveNextStep}
-                style={[styles.nextButton, !isCompleted && styles.buttonDisabled]}
-              >
-                <Text style={styles.nextButtonText}>
-                  다음 단계로 이동 ({currentStepIndex + 2}/{STEP_CONFIGS.length})
-                </Text>
-              </Pressable>
-            )}
-          </View>
-        )}
-
+    <SafeAreaView style={styles.flowSafeArea}>
+      <ScrollView contentContainerStyle={styles.flowContainer}>
         {flowStage === "ox" && (
           <OXQuestionView
             answers={oxAnswers}
@@ -780,95 +748,130 @@ export default function StepBasedCaptureScreen() {
             oxCompleted={oxCompleted}
           />
         )}
-
-        <View style={styles.summarySection}>
-          <Text style={styles.summaryTitle}>촬영 진행 현황</Text>
-          {STEP_CONFIGS.map((step, index) => {
-            const state = stepStates[index];
-            return (
-              <View key={step.id} style={styles.summaryCard}>
-                <View style={styles.summaryHeader}>
-                  <View
-                    style={[styles.summaryBadge, { backgroundColor: step.highlightColor }]}
-                  >
-                    <Text style={styles.summaryBadgeText}>{step.id}</Text>
-                  </View>
-                  <Text style={styles.summaryStepTitle}>{step.title}</Text>
-                </View>
-                <Text style={styles.summaryStatus}>
-                  상태: {renderStatusLabel(state.status)}
-                </Text>
-                {state.quality && (
-                  <Text style={styles.summaryTip} numberOfLines={2}>
-                    품질: {state.quality.headline}
-                  </Text>
-                )}
-                {state.uploadUrl && (
-                  <Text style={styles.summaryUrl} numberOfLines={1}>
-                    {state.uploadUrl}
-                  </Text>
-                )}
-              </View>
-            );
-          })}
-        </View>
       </ScrollView>
     </SafeAreaView>
   );
 
   function renderCamera() {
     if (!permission) {
-      return <View style={styles.permissionCard} />;
+      return (
+        <View style={styles.cameraStage}>
+          <ActivityIndicator color="#fff" />
+        </View>
+      );
     }
 
     if (!permission.granted) {
       return (
-        <View style={styles.permissionCard}>
+        <View style={styles.permissionStage}>
           <Text style={styles.permissionText}>
             전면 카메라 접근 권한이 필요합니다.
           </Text>
           <Pressable style={styles.permissionButton} onPress={requestPermission}>
             <Text style={styles.permissionButtonText}>권한 허용</Text>
           </Pressable>
+          <Text style={styles.permissionHint}>
+            권한을 허용하면 자동으로 촬영 세션이 시작됩니다.
+          </Text>
         </View>
       );
     }
 
+    const cleanedTitle = currentStep.title.replace(/^STEP\\s\\d+\\s·\\s/, "");
+
     return (
-      <View style={styles.cameraWrapper}>
+      <View style={styles.cameraStage}>
         <CameraView
           ref={cameraRef}
-          style={styles.camera}
+          style={styles.cameraSurface}
           facing="front"
           ratio="4:3"
         />
         {currentStep.overlay === "base" ? <BaseGuideOverlay /> : <CheekGuideOverlay />}
         {flashVisible && <View style={styles.flashOverlay} pointerEvents="none" />}
 
-        <View style={styles.cameraControls}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.shutterButton,
-              pressed && styles.shutterPressed,
-              isUploading && styles.buttonDisabled,
-            ]}
-            onPress={handleCapture}
-            disabled={isUploading}
-          >
-            {isUploading ? (
-              <ActivityIndicator color="#1f1b2e" />
-            ) : (
-              <Text style={styles.shutterLabel}>촬영</Text>
-            )}
-          </Pressable>
+        <View style={styles.captureTopBar}>
+          <Text style={styles.captureTopLabel}>Tangly 표준 촬영</Text>
+          <View style={styles.captureChipRow}>
+            {STEP_CONFIGS.map((step, index) => {
+              const status = stepStates[index].status;
+              const active = index === currentStepIndex;
+              const completed = status === "completed";
+              return (
+                <View
+                  key={step.id}
+                  style={[
+                    styles.captureChip,
+                    active && styles.captureChipActive,
+                    completed && styles.captureChipDone,
+                  ]}
+                >
+                  <Text style={styles.captureChipStep}>STEP {index + 1}</Text>
+                  <Text style={styles.captureChipTitle}>
+                    {step.title.replace(/^STEP\\s\\d+\\s·\\s/, "")}
+                  </Text>
+                  <Text style={styles.captureChipStatus}>{renderStatusLabel(status)}</Text>
+                </View>
+              );
+            })}
+          </View>
+        </View>
 
-          <Pressable
-            style={[styles.closeButton, isUploading && styles.buttonDisabled]}
-            onPress={() => resetStep(currentStepIndex)}
-            disabled={isUploading}
+        <View style={styles.captureBottomSheet}>
+          <Text style={styles.captureStepLabel}>
+            STEP {currentStepIndex + 1} · {cleanedTitle}
+          </Text>
+          <Text style={styles.captureDescription}>{currentStep.description}</Text>
+          <Text
+            style={[
+              styles.captureStatus,
+              currentState.status === "error" && styles.captureStatusError,
+            ]}
           >
-            <Text style={styles.closeButtonText}>다시 촬영</Text>
-          </Pressable>
+            {currentState.message}
+          </Text>
+          {currentState.quality && (
+            <Text style={styles.captureTip}>{currentState.quality.tip}</Text>
+          )}
+          <View style={styles.captureControlsRow}>
+            <Pressable
+              style={[
+                styles.shutterButton,
+                isUploading && styles.buttonDisabled,
+              ]}
+              onPress={handleCapture}
+              disabled={isUploading}
+            >
+              {isUploading ? (
+                <ActivityIndicator color="#1f1b2e" />
+              ) : (
+                <Text style={styles.shutterLabel}>촬영</Text>
+              )}
+            </Pressable>
+            <Pressable
+              style={[
+                styles.secondaryButton,
+                isUploading && styles.buttonDisabled,
+              ]}
+              onPress={() => resetStep(currentStepIndex)}
+              disabled={isUploading}
+            >
+              <Text style={styles.secondaryButtonText}>다시 촬영</Text>
+            </Pressable>
+          </View>
+          {currentStepIndex < STEP_CONFIGS.length - 1 && (
+            <Pressable
+              disabled={!isCompleted}
+              onPress={moveNextStep}
+              style={[
+                styles.nextStageButton,
+                !isCompleted && styles.buttonDisabled,
+              ]}
+            >
+              <Text style={styles.nextStageText}>다음 단계로 이동</Text>
+            </Pressable>
+          )}
+          <Text style={styles.captureHint}>{globalMessage}</Text>
         </View>
       </View>
     );
@@ -886,46 +889,6 @@ function renderStatusLabel(status: CaptureState) {
     default:
       return "대기 중";
   }
-}
-
-function StepIndicator({
-  steps,
-  stepStates,
-  currentIndex,
-}: {
-  steps: StepConfig[];
-  stepStates: StepState[];
-  currentIndex: number;
-}) {
-  return (
-    <View style={styles.stepper}>
-      {steps.map((step, index) => {
-        const completed = stepStates[index].status === "completed";
-        const active = index === currentIndex;
-        return (
-          <View key={step.id} style={styles.stepperItem}>
-            <View
-              style={[
-                styles.stepCircle,
-                completed && styles.stepCircleCompleted,
-                active && styles.stepCircleActive,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.stepCircleText,
-                  (completed || active) && styles.stepCircleTextActive,
-                ]}
-              >
-                {index + 1}
-              </Text>
-            </View>
-            {index < steps.length - 1 && <View style={styles.stepLine} />}
-          </View>
-        );
-      })}
-    </View>
-  );
 }
 
 const AnalysisProgressView = ({
@@ -1058,6 +1021,12 @@ const ReportView = ({
     {data.recommendations.length > 0 && (
       <View style={styles.recommendSection}>
         <Text style={styles.recommendSectionTitle}>세션 맞춤 제품 추천</Text>
+        <Text style={styles.recommendIntro}>
+          그래서 이번 추천은, 지금 피부 상태를 기준으로 골랐어요.
+        </Text>
+        <Text style={styles.recommendIntroSecondary}>
+          지금 단계에서 가장 부담 없이 도움이 될 제품들이에요.
+        </Text>
         {data.recommendations.map((item) => (
           <ProductRecommendationCard key={item.id} item={item} />
         ))}
@@ -1185,89 +1154,114 @@ const buildReportFromQuality = (
   const baseQuality = states[0]?.quality;
   const cheekQuality = states[1]?.quality;
 
-  const sensitive = oxAnswers["sensitive_skin"] === "O";
-  const sunscreen = oxAnswers["daily_sunscreen"] === "O";
-  const frequentMakeup = oxAnswers["frequent_makeup"] === "O";
-  const recentTrouble = oxAnswers["recent_skin_trouble"] === "O";
-  const oily = oxAnswers["oiliness_high"] === "O";
+  const feelsTight = oxAnswers["tight_after_wash"] === "O";
+  const makeupCakey = oxAnswers["makeup_cakey"] === "O";
+  const elasticityConcern = oxAnswers["elasticity_change"] === "O";
+  const feelsSensitive = oxAnswers["skin_sensitive_now"] === "O";
+  const troubleFree = oxAnswers["no_recent_trouble"] === "O";
 
-  const summaryParts = [] as string[];
-  if (baseQuality?.passed) {
-    summaryParts.push("기준 촬영이 안정적으로 확보되어 전체 피부 톤을 읽을 수 있었어요.");
-  } else {
-    summaryParts.push("기준 촬영 정보가 다소 제한적이라 얼굴 전체 톤은 보수적으로 해석합니다.");
+  const empathyIntro = baseQuality?.passed
+    ? "전체적으로 피부 컨디션은 나쁘지 않은 편이에요."
+    : "기본 촬영에서 읽히는 정보가 살짝 부족했지만, 지금 피부는 충분히 회복 가능한 상태예요.";
+
+  const photoNarrative = cheekQuality?.passed
+    ? "볼 쪽은 아직 탄력이 비교적 잘 유지되고 있어요."
+    : "볼 쪽이 예전보다 탄력을 유지하는 힘이 조금 약해진 상태예요.";
+
+  const oxNarratives: string[] = [];
+  if (feelsTight) {
+    oxNarratives.push(
+      "세안 후 당김을 느끼신다고 한 점을 보면, 지금 피부가 수분을 유지하는 힘이 조금 약해진 상태예요."
+    );
+    oxNarratives.push("그래서 단순히 수분을 넣는 것보다, 지금 있는 수분을 지켜주는 관리가 더 중요해요.");
+  } else if (makeupCakey) {
+    oxNarratives.push(
+      "화장이 자주 들뜬다고 느끼는 건, 피부 속 컨디션이 균일하지 않을 때 자주 나타나는 신호예요."
+    );
+    oxNarratives.push("이럴 땐 각질을 자극적으로 제거하기보다는 피부 결을 편안하게 정돈해주는 방향이 좋아요.");
+  } else if (elasticityConcern) {
+    oxNarratives.push("탄력이 예전 같지 않다고 느끼신 부분이 이번 촬영 결과와도 맞아 떨어졌어요.");
+    oxNarratives.push("완전히 무너진 상태는 아니고, 지금 관리하면 회복 가능한 시기예요.");
+  } else if (feelsSensitive) {
+    oxNarratives.push("요즘 피부가 예민해졌다고 느끼신 점을 보면, 피부 장벽이 조금 약해진 상태일 수 있어요.");
+    oxNarratives.push("이럴 땐 강한 기능성보다 기본을 지켜주는 관리가 더 효과적이에요.");
+  } else if (troubleFree) {
+    oxNarratives.push("특별한 트러블이 없다는 점은, 피부 기본 컨디션이 잘 유지되고 있다는 신호예요.");
+    oxNarratives.push("지금은 문제 해결보다는 상태 유지 + 예방 관리가 잘 맞는 시기예요.");
   }
-  if (recentTrouble) {
-    summaryParts.push("최근 트러블이 있다고 답해주셔서 해당 부위에 자극 완화 팁을 포함했어요.");
+
+  const careDirection = (() => {
+    if (!cheekQuality?.passed || elasticityConcern || feelsTight) {
+      return "그래서 이번엔 수분을 많이 넣기보다는 탄력을 받쳐주면서 수분을 지켜주는 관리가 잘 맞아요.";
+    }
+    if (makeupCakey) {
+      return "지금은 강한 기능성보다는 피부 결을 편안하게 정돈해주는 관리가 좋아요.";
+    }
+    if (feelsSensitive) {
+      return "예민해진 느낌이 있을 땐 장벽을 차분히 다독여주는 루틴이 우선이에요.";
+    }
+    if (troubleFree) {
+      return "지금은 상태를 유지하면서 예방 위주의 케어를 이어가면 충분해요.";
+    }
+    return "자극적이지 않은 기본 루틴을 일정하게 이어가는 것이 가장 도움이 돼요.";
+  })();
+
+  const summaryParts = [empathyIntro, photoNarrative];
+  if (oxNarratives.length) {
+    summaryParts.push(oxNarratives.join(" "));
   }
+  summaryParts.push(careDirection);
 
-  const summary = summaryParts.join(" ") || "촬영이 정상적으로 완료되었습니다.";
-
-  const highlight = sensitive
-    ? "예민한 피부 특성이 있어 진정 케어를 함께 권장합니다."
-    : cheekQuality?.passed
-      ? "볼 피부 결은 평균 범위 안쪽이지만 보습 후 재측정을 권장합니다."
-      : "볼 피부 결 분석을 위해 조금 더 가까운 촬영이 필요했어요.";
+  const summary = summaryParts.filter(Boolean).join("\n\n");
+  const highlight = careDirection;
 
   const items: ReportItem[] = [
     {
-      id: "texture",
-      title: "피부 결",
-      description: cheekQuality?.passed
-        ? "볼 피부 결이 비교적 균일하게 촬영되었습니다."
-        : "볼 부위가 흐릿해 결이 거칠게 인식될 수 있어요.",
-      comparison: cheekQuality?.passed
-        ? oily
-          ? "유분이 많아 결이 조금 두꺼워질 수 있음"
-          : "동연령 평균 대비 보통"
-        : "평균 대비 약간 낮음",
-      status: cheekQuality?.passed && !oily ? "보통" : "주의",
-    },
-    {
-      id: "pore",
-      title: "모공",
-      description: frequentMakeup
-        ? "메이크업 빈도가 높아 모공 케어 메시지를 강화했습니다."
-        : "T존 모공 분포가 일정하며 급격한 확장은 보이지 않습니다.",
-      comparison: frequentMakeup ? "클렌징 필요성이 다소 높음" : "평균 대비 약간 촘촘",
-      status: frequentMakeup ? "주의" : "좋음",
+      id: "overall",
+      title: "전체 컨디션",
+      description: baseQuality?.passed
+        ? "기본 촬영 기준으로 피부 결은 크게 무너지지 않았어요."
+        : "기본 촬영 정보가 제한적이라 조심스럽게 안내드릴게요.",
+      comparison: troubleFree
+        ? "특별한 트러블이 없다는 응답과도 흐름이 비슷해요."
+        : "부분적으로 컨디션이 흔들리면 트러블로 번지기 쉬운 시기예요.",
+      status: troubleFree ? "좋음" : "보통",
     },
     {
       id: "elasticity",
       title: "탄력",
-      description: baseQuality?.passed
-        ? "얼굴 윤곽이 안정적으로 촬영되어 탄력 지표가 고르게 나타납니다."
-        : "기준 촬영이 멀어 탄력 지표를 보수적으로 해석합니다.",
-      comparison: baseQuality?.passed ? "평균 대비 비슷" : "평균 대비 약간 낮음",
-      status: baseQuality?.passed ? "보통" : "주의",
+      description: cheekQuality?.passed
+        ? "볼 라인 탄력이 아직은 잘 유지되고 있어요."
+        : "볼 라인이 아래로 살짝 끌리는 신호가 보여요.",
+      comparison: elasticityConcern
+        ? "탄력이 예전 같지 않다는 답변과도 맞물려 보여요."
+        : "지금은 급하게 당길 필요는 없어요.",
+      status: cheekQuality?.passed && !elasticityConcern ? "보통" : "주의",
     },
     {
-      id: "sagging",
-      title: "처짐",
-      description: sensitive
-        ? "예민한 피부 특성을 고려해 처짐 코멘트를 완만하게 제시합니다."
-        : "광대 아래 영역의 톤 변화가 크지 않아 아직 큰 처짐 징후는 보이지 않습니다.",
-      comparison: sensitive ? "자극에 따라 변동 가능" : "동연령 대비 안정적",
-      status: "좋음",
-    },
-    {
-      id: "wrinkle",
-      title: "주름",
-      description: sunscreen
-        ? "자외선 차단 습관 덕분에 주름 진행이 완만할 가능성이 높습니다."
-        : "자외선 차단이 부족해 미세 주름이 빠르게 늘 수 있으니 주의를 권장합니다.",
-      comparison: sunscreen ? "평균 대비 양호" : "평균 대비 다소 민감",
-      status: sunscreen ? "좋음" : "주의",
+      id: "hydration",
+      title: "수분 · 윤기",
+      description: feelsTight
+        ? "수분을 오래 붙잡아두기엔 살짝 버거워 보이는 상태예요."
+        : makeupCakey
+          ? "피부 속 컨디션이 균일하지 않아 화장이 들뜰 수 있어요."
+          : "수분을 받아들이는 힘은 크게 나쁘지 않아요.",
+      comparison: feelsTight
+        ? "세안 직후 건조 신호가 올 수 있으니 바로 보습막을 덮어주세요."
+        : "가벼운 윤기 관리만 더해도 충분해요.",
+      status: feelsTight || makeupCakey ? "주의" : "좋음",
     },
   ];
 
   const tips = [
-    recentTrouble
-      ? "트러블 부위는 강한 각질 제거 대신 진정 앰플을 사용해 주세요."
-      : "볼 집중 보습 후 1주일 내 재촬영하면 변화를 더 잘 볼 수 있어요.",
-    sunscreen
-      ? "자외선 차단제 사용을 꾸준히 유지하면 탄력 항목이 안정적으로 유지됩니다."
-      : "외출 15분 전에 자외선 차단제를 꼭 바르는 습관을 들여 주세요.",
+    feelsTight
+      ? "세안 후 1분 안에 가벼운 수분막을 덮어 수분이 달아나지 않게 해보세요."
+      : "클렌징 후에도 얼굴이 크게 당기지 않는다면 지금 루틴을 유지해도 좋아요.",
+    makeupCakey
+      ? "각질을 자극적으로 제거하기보다 결 정돈 토너로 부드럽게 다독여주세요."
+      : feelsSensitive
+        ? "예민하다고 느낄 땐 강한 기능성보다 기본 보습과 진정 루틴부터 챙겨주세요."
+        : "주 1~2회 수분 팩을 올려 윤기를 보충하면 탄력도 같이 유지되기 쉬워요.",
   ];
 
   return {
@@ -1278,11 +1272,11 @@ const buildReportFromQuality = (
     tips,
     needs: [
       {
-        id: "hydration",
-        label: "수분 케어",
-        level: "medium",
+        id: "routine_focus",
+        label: feelsTight || makeupCakey ? "수분 유지 루틴" : "안정 관리",
+        level: !cheekQuality?.passed || feelsTight ? "high" : "medium",
         description:
-          "기본 리포트입니다. 서버 리포트가 연결되면 자동으로 대체됩니다.",
+          "이번 기본 리포트는 촬영 결과와 OX 응답을 엮어 현재에 맞는 관리 방향을 제안합니다.",
       },
     ],
     recommendations: [],
@@ -1292,108 +1286,56 @@ const buildReportFromQuality = (
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
+    backgroundColor: "#050109",
+  },
+  flowSafeArea: {
+    flex: 1,
     backgroundColor: "#F6F1FA",
   },
-  container: {
+  flowContainer: {
     padding: 20,
     gap: 20,
   },
-  heroCard: {
-    backgroundColor: "#1f1b2e",
-    borderRadius: 24,
-    padding: 20,
-    gap: 12,
-  },
-  bannerTitle: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "white",
-  },
-  bannerDescription: {
-    color: "white",
-    opacity: 0.8,
-  },
-  heroHint: {
-    color: "#E7DDF3",
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  ctaButton: {
-    backgroundColor: "#A884CC",
-    paddingVertical: 14,
-    borderRadius: 999,
-    alignItems: "center",
-  },
-  ctaButtonPressed: {
-    opacity: 0.85,
-  },
-  ctaLabel: {
-    color: "white",
-    fontWeight: "bold",
-    fontSize: 16,
-  },
-  stepContainer: {
-    gap: 16,
-  },
-  stepper: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  stepperItem: {
-    flexDirection: "row",
-    alignItems: "center",
+  cameraStage: {
     flex: 1,
+    backgroundColor: "#000",
+    justifyContent: "flex-end",
   },
-  stepCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 2,
-    borderColor: "#E0D5F3",
+  cameraSurface: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+  },
+  permissionStage: {
+    flex: 1,
+    backgroundColor: "#0E0A18",
     alignItems: "center",
     justifyContent: "center",
+    padding: 32,
+    gap: 16,
   },
-  stepCircleActive: {
-    borderColor: "#A884CC",
+  permissionText: {
+    color: "#E7DDF3",
+    marginBottom: 8,
+    textAlign: "center",
+    fontSize: 16,
   },
-  stepCircleCompleted: {
+  permissionButton: {
     backgroundColor: "#A884CC",
-    borderColor: "#A884CC",
+    paddingVertical: 12,
+    paddingHorizontal: 32,
+    borderRadius: 999,
   },
-  stepCircleText: {
-    fontWeight: "bold",
-    color: "#A884CC",
-  },
-  stepCircleTextActive: {
+  permissionButtonText: {
     color: "white",
-  },
-  stepLine: {
-    flex: 1,
-    height: 2,
-    backgroundColor: "#E0D5F3",
-    marginHorizontal: 4,
-  },
-  stepHeader: {
-    gap: 6,
-  },
-  stepTitle: {
-    fontSize: 18,
     fontWeight: "bold",
-    color: "#1f1b2e",
   },
-  stepDescription: {
-    fontSize: 14,
-    color: "#4B3A63",
-  },
-  cameraWrapper: {
-    height: 420,
-    borderRadius: 24,
-    overflow: "hidden",
-    backgroundColor: "#000",
-  },
-  camera: {
-    flex: 1,
+  permissionHint: {
+    color: "#9F94B9",
+    fontSize: 12,
+    textAlign: "center",
   },
   overlayContainer: {
     position: "absolute",
@@ -1435,91 +1377,128 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     opacity: 0.9,
   },
-  cameraControls: {
+  captureTopBar: {
     position: "absolute",
-    bottom: 24,
-    width: "100%",
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingTop: 24,
+    paddingHorizontal: 20,
+    gap: 12,
+  },
+  captureTopLabel: {
+    color: "#DCCEF5",
+    fontSize: 13,
+    letterSpacing: 0.3,
+  },
+  captureChipRow: {
     flexDirection: "row",
-    justifyContent: "space-around",
+    gap: 10,
+  },
+  captureChip: {
+    flex: 1,
+    borderRadius: 16,
+    padding: 12,
+    backgroundColor: "rgba(8,5,18,0.55)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.15)",
+  },
+  captureChipActive: {
+    borderColor: "#FFFFFF",
+    backgroundColor: "rgba(8,5,18,0.75)",
+  },
+  captureChipDone: {
+    backgroundColor: "rgba(168,132,204,0.65)",
+    borderColor: "rgba(255,255,255,0.35)",
+  },
+  captureChipStep: {
+    color: "#C9BEDF",
+    fontSize: 11,
+  },
+  captureChipTitle: {
+    color: "#FFFFFF",
+    fontWeight: "600",
+    fontSize: 13,
+    marginTop: 2,
+  },
+  captureChipStatus: {
+    color: "#D4CCE5",
+    fontSize: 11,
+    marginTop: 4,
+  },
+  captureBottomSheet: {
+    backgroundColor: "rgba(5,4,11,0.72)",
+    paddingHorizontal: 20,
+    paddingTop: 24,
+    paddingBottom: 36,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    gap: 10,
+  },
+  captureStepLabel: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  captureDescription: {
+    color: "#CEC4DF",
+  },
+  captureStatus: {
+    color: "#E4DDF7",
+    fontWeight: "600",
+  },
+  captureStatusError: {
+    color: "#F5A8A0",
+  },
+  captureTip: {
+    color: "#CFC3EB",
+    fontSize: 12,
+  },
+  captureControlsRow: {
+    flexDirection: "row",
     alignItems: "center",
+    gap: 12,
+    marginTop: 8,
   },
   shutterButton: {
     backgroundColor: "#FFFFFF",
-    width: 140,
     paddingVertical: 16,
     borderRadius: 999,
     alignItems: "center",
-  },
-  shutterPressed: {
-    transform: [{ scale: 0.98 }],
+    flex: 1,
   },
   shutterLabel: {
     fontWeight: "bold",
     color: "#1f1b2e",
   },
-  closeButton: {
-    backgroundColor: "rgba(0,0,0,0.55)",
+  secondaryButton: {
     paddingVertical: 12,
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
     borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.6)",
   },
-  closeButtonText: {
+  secondaryButtonText: {
     color: "white",
-    fontWeight: "700",
-  },
-  statusCard: {
-    padding: 14,
-    borderRadius: 16,
-    backgroundColor: "white",
-    gap: 6,
-  },
-  statusLabel: {
-    color: "#4B3A63",
     fontWeight: "600",
-  },
-  statusError: {
-    color: "#C0392B",
-  },
-  statusTip: {
-    fontSize: 12,
-    color: "#6A4BA1",
-  },
-  previewCard: {
-    backgroundColor: "white",
-    borderRadius: 16,
-    padding: 16,
-    gap: 12,
-  },
-  previewTitle: {
-    fontWeight: "bold",
-    fontSize: 15,
-  },
-  previewImage: {
-    width: "100%",
-    aspectRatio: 3 / 4,
-    borderRadius: 16,
-    backgroundColor: "#000",
-  },
-  previewHint: {
-    fontSize: 12,
-    color: "#6A4BA1",
-  },
-  previewUrl: {
-    fontSize: 12,
-    color: "#6A4BA1",
-  },
-  nextButton: {
-    backgroundColor: "#1f1b2e",
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: "center",
-  },
-  nextButtonText: {
-    color: "white",
-    fontWeight: "700",
   },
   buttonDisabled: {
     opacity: 0.5,
+  },
+  nextStageButton: {
+    backgroundColor: "#A884CC",
+    borderRadius: 999,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  nextStageText: {
+    color: "white",
+    fontWeight: "700",
+  },
+  captureHint: {
+    color: "#BDB0D4",
+    fontSize: 12,
+    marginTop: 4,
   },
   analysisCard: {
     backgroundColor: "white",
@@ -1784,6 +1763,14 @@ const styles = StyleSheet.create({
     color: "#1f1b2e",
     fontSize: 16,
   },
+  recommendIntro: {
+    color: "#4B3A63",
+    fontSize: 13,
+  },
+  recommendIntroSecondary: {
+    color: "#6A4BA1",
+    fontSize: 12,
+  },
   recommendCard: {
     backgroundColor: "#F6F1FA",
     borderRadius: 16,
@@ -1838,71 +1825,5 @@ const styles = StyleSheet.create({
   recommendNote: {
     color: "#7A6D92",
     fontSize: 12,
-  },
-  summarySection: {
-    gap: 12,
-  },
-  summaryTitle: {
-    fontWeight: "bold",
-    fontSize: 16,
-    color: "#1f1b2e",
-  },
-  summaryCard: {
-    backgroundColor: "white",
-    borderRadius: 14,
-    padding: 16,
-    gap: 6,
-  },
-  summaryHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  summaryBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-  },
-  summaryBadgeText: {
-    color: "white",
-    fontWeight: "600",
-  },
-  summaryStepTitle: {
-    fontWeight: "600",
-    color: "#1f1b2e",
-  },
-  summaryStatus: {
-    color: "#4B3A63",
-  },
-  summaryTip: {
-    fontSize: 12,
-    color: "#78738C",
-  },
-  summaryUrl: {
-    fontSize: 12,
-    color: "#6A4BA1",
-  },
-  permissionCard: {
-    height: 420,
-    borderRadius: 24,
-    backgroundColor: "white",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-  },
-  permissionText: {
-    color: "#4B3A63",
-    marginBottom: 16,
-    textAlign: "center",
-  },
-  permissionButton: {
-    backgroundColor: "#A884CC",
-    paddingVertical: 12,
-    paddingHorizontal: 32,
-    borderRadius: 999,
-  },
-  permissionButtonText: {
-    color: "white",
-    fontWeight: "bold",
   },
 });
