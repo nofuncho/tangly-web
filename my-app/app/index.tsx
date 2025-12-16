@@ -1,7 +1,10 @@
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { useRouter } from "expo-router";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+import { supabase } from "@/lib/supabase";
 
 const COLORS = {
   primary: "#A884CC",
@@ -63,6 +66,30 @@ type TabItem = {
 
 export default function HomeScreen() {
   const router = useRouter();
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      if (data.session) {
+        setCheckingSession(false);
+      } else {
+        router.replace("/auth");
+      }
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session) {
+        router.replace("/auth");
+      }
+    });
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, [router]);
 
   const handleStartCapture = () => {
     router.push("/capture");
@@ -105,6 +132,15 @@ export default function HomeScreen() {
       handleOpenReports();
     }
   };
+
+  if (checkingSession) {
+    return (
+      <SafeAreaView style={styles.loadingSafeArea}>
+        <StatusBar style="dark" />
+        <ActivityIndicator color={COLORS.primary} />
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -332,6 +368,12 @@ function MenuIcon() {
 }
 
 const styles = StyleSheet.create({
+  loadingSafeArea: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.background,
+  },
   safeArea: {
     flex: 1,
     backgroundColor: COLORS.background,

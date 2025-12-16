@@ -1,20 +1,20 @@
-import { useEffect } from 'react';
-import { Text, TextInput } from 'react-native';
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import { useFonts } from 'expo-font';
-import * as SplashScreen from 'expo-splash-screen';
-import 'react-native-reanimated';
+import { useEffect } from "react";
+import { Text, TextInput } from "react-native";
+import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
+import { Stack } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import { useFonts } from "expo-font";
+import * as SplashScreen from "expo-splash-screen";
+import "react-native-reanimated";
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useColorScheme } from "@/hooks/use-color-scheme";
 
 void SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const [fontsLoaded] = useFonts({
-    Pretendard: require('../assets/fonts/PretendardVariable.ttf'),
+    Pretendard: require("../assets/fonts/PretendardVariable.ttf"),
   });
 
   useEffect(() => {
@@ -33,8 +33,10 @@ export default function RootLayout() {
   }
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack screenOptions={{ headerShown: false }}>
+    <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+      <Stack screenOptions={{ headerShown: false }} initialRouteName="auth/index">
+        <Stack.Screen name="auth/index" />
+        <Stack.Screen name="auth/register" />
         <Stack.Screen name="index" />
         <Stack.Screen name="capture" />
         <Stack.Screen name="eye-wrinkle/index" />
@@ -44,8 +46,8 @@ export default function RootLayout() {
         <Stack.Screen
           name="modal"
           options={{
-            presentation: 'modal',
-            title: 'Modal',
+            presentation: "modal",
+            title: "Modal",
             headerShown: true,
           }}
         />
