@@ -23,7 +23,7 @@ import { SERVER_BASE_URL } from "@/lib/server";
 type FaceDetectorModule = typeof import("expo-face-detector");
 let NativeFaceDetector: FaceDetectorModule | null = null;
 try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   NativeFaceDetector = require("expo-face-detector");
 } catch {
   NativeFaceDetector = null;

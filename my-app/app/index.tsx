@@ -104,9 +104,7 @@ export default function HomeScreen() {
       <View style={styles.container}>
         <View style={styles.topBar}>
           <View style={styles.logoWrapper}>
-            <View style={styles.logoMarkOuter}>
-              <View style={styles.logoMarkInner} />
-            </View>
+            <CloudLogoMark />
             <Text style={styles.logoText}>Tangly</Text>
           </View>
           <View style={styles.topActions}>
@@ -193,6 +191,17 @@ export default function HomeScreen() {
         </View>
       </View>
     </SafeAreaView>
+  );
+}
+
+function CloudLogoMark() {
+  return (
+    <View style={styles.cloudLogo}>
+      <View style={styles.cloudBase} />
+      <View style={[styles.cloudCircleLarge, styles.cloudCircleCenter]} />
+      <View style={[styles.cloudCircleSmall, styles.cloudCircleLeft]} />
+      <View style={[styles.cloudCircleSmall, styles.cloudCircleRight]} />
+    </View>
   );
 }
 
@@ -335,20 +344,48 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
   },
-  logoMarkOuter: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 2,
-    borderColor: COLORS.primary,
+  cloudLogo: {
+    width: 46,
+    height: 34,
+    position: "relative",
     justifyContent: "center",
     alignItems: "center",
   },
-  logoMarkInner: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
+  cloudBase: {
+    position: "absolute",
+    bottom: 0,
+    width: "100%",
+    height: 18,
+    borderRadius: 12,
     backgroundColor: COLORS.primary,
+    zIndex: 1,
+  },
+  cloudCircleLarge: {
+    position: "absolute",
+    top: 0,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: COLORS.primary,
+    zIndex: 2,
+  },
+  cloudCircleSmall: {
+    position: "absolute",
+    top: 9,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: COLORS.primary,
+    zIndex: 2,
+  },
+  cloudCircleCenter: {
+    left: 8,
+  },
+  cloudCircleLeft: {
+    left: -2,
+  },
+  cloudCircleRight: {
+    right: -2,
   },
   logoText: {
     fontSize: 20,

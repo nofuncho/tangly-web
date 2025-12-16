@@ -1,12 +1,36 @@
+import { useEffect } from 'react';
+import { Text, TextInput } from 'react-native';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useFonts } from 'expo-font';
+import * as SplashScreen from 'expo-splash-screen';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
+void SplashScreen.preventAutoHideAsync();
+
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+  const [fontsLoaded] = useFonts({
+    Pretendard: require('../assets/fonts/PretendardVariable.ttf'),
+  });
+
+  useEffect(() => {
+    if (fontsLoaded) {
+      const fontStyle = { fontFamily: 'Pretendard' };
+      Text.defaultProps ??= {};
+      Text.defaultProps.style = [Text.defaultProps.style, fontStyle].filter(Boolean);
+      TextInput.defaultProps ??= {};
+      TextInput.defaultProps.style = [TextInput.defaultProps.style, fontStyle].filter(Boolean);
+      void SplashScreen.hideAsync();
+    }
+  }, [fontsLoaded]);
+
+  if (!fontsLoaded) {
+    return null;
+  }
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
