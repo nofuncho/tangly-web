@@ -7,6 +7,7 @@ import {
   type PhotoRow,
   type ProductRow,
 } from "@/lib/recommendations";
+import { buildEyeWrinkleArchiveEntry } from "@/lib/eye-wrinkle-report";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -43,7 +44,7 @@ export async function GET(req: Request) {
 
     const { data: sessions, error: sessionError } = await supabase
       .from("analysis_sessions")
-      .select("id, created_at")
+      .select("id, created_at, source")
       .order("created_at", { ascending: false })
       .limit(limit);
 
@@ -96,6 +97,24 @@ export async function GET(req: Request) {
     const analysisReports =
       sessions?.flatMap((session) => {
         const sessionPhotos = photosBySession.get(session.id) ?? [];
+        if ((session.source ?? "").toLowerCase() === "eye_wrinkle") {
+          const eyeEntry = buildEyeWrinkleArchiveEntry(session.id, session.created_at, sessionPhotos);
+          const thumbnail = eyeEntry.thumbnail ?? selectThumbnail(sessionPhotos);
+          if (!thumbnail) {
+            return [];
+          }
+          return [
+            {
+              id: session.id,
+              createdAt: session.created_at,
+              summary: eyeEntry.summary,
+              headline: eyeEntry.headline,
+              thumbnail,
+              type: "eye_wrinkle" as const,
+            },
+          ];
+        }
+
         const sessionOx = oxBySession.get(session.id) ?? [];
         const payload = buildRecommendationPayload({
           sessionId: session.id,
@@ -116,7 +135,7 @@ export async function GET(req: Request) {
             summary: payload.summary,
             headline: payload.highlight,
             thumbnail,
-            type: "analysis" as const,
+            type: "skin" as const,
           },
         ];
       }) ?? [];

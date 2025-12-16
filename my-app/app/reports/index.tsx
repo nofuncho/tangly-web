@@ -13,7 +13,7 @@ import { Image } from "expo-image";
 
 import { SERVER_BASE_URL, buildServerUrl } from "@/lib/server";
 
-type ArchiveType = "analysis" | "personal_color";
+type ArchiveType = "skin" | "eye_wrinkle" | "personal_color";
 
 type ArchiveItem = {
   id: string;
@@ -141,7 +141,8 @@ const ReportCard = ({
   onPress: (item: ArchiveItem) => void;
 }) => {
   const dateLabel = useMemo(() => formatDate(item.createdAt), [item.createdAt]);
-  const typeLabel = item.type === "personal_color" ? "퍼스널컬러" : "촬영 리포트";
+  const typeLabel =
+    item.type === "personal_color" ? "퍼스널컬러" : item.type === "eye_wrinkle" ? "눈 주름" : "피부";
 
   return (
     <Pressable style={styles.card} onPress={() => onPress(item)}>

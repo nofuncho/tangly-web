@@ -7,6 +7,7 @@ import {
   type PhotoRow,
   type ProductRow,
 } from "@/lib/recommendations";
+import { buildEyeWrinkleDetailPayload } from "@/lib/eye-wrinkle-report";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -42,13 +43,15 @@ export async function GET(
 
     const { data: session, error: sessionError } = await supabase
       .from("analysis_sessions")
-      .select("id, created_at")
+      .select("id, created_at, source")
       .eq("id", sessionId)
       .single();
 
     if (sessionError || !session) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
+
+    const isEyeWrinkle = (session.source ?? "").toLowerCase() === "eye_wrinkle";
 
     const { data: photosData, error: photosError } = await supabase
       .from("photos")
@@ -58,6 +61,18 @@ export async function GET(
     if (photosError) {
       console.error("reports detail photos error", photosError);
       return NextResponse.json({ error: photosError.message }, { status: 500 });
+    }
+
+    if (isEyeWrinkle) {
+      const payload = buildEyeWrinkleDetailPayload({
+        sessionId,
+        createdAt: session.created_at,
+        photos: (photosData ?? []) as PhotoRow[],
+      });
+      return NextResponse.json({
+        ...payload,
+        type: "eye_wrinkle",
+      });
     }
 
     const { data: oxData, error: oxError } = await supabase
@@ -90,7 +105,7 @@ export async function GET(
     const thumbnail = selectThumbnail((photosData ?? []) as PhotoRow[]);
 
     return NextResponse.json({
-      type: "analysis",
+      type: "skin",
       sessionId,
       createdAt: session.created_at,
       thumbnail,

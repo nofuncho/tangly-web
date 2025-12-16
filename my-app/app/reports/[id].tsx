@@ -19,7 +19,7 @@ import {
 import { buildServerUrl } from "@/lib/server";
 import { type PersonalColorExtras } from "@/lib/personal-color";
 
-type ReportType = "analysis" | "personal_color";
+type ReportType = "skin" | "eye_wrinkle" | "personal_color";
 
 type ReportDetailPayload = {
   type: ReportType;
@@ -47,7 +47,12 @@ export default function ReportDetailScreen() {
   const initialThumb = params.thumbnail && !Array.isArray(params.thumbnail) ? params.thumbnail : null;
   const initialDate = params.createdAt && !Array.isArray(params.createdAt) ? params.createdAt : null;
   const typeParam = params.type && !Array.isArray(params.type) ? params.type : null;
-  const initialType: ReportType = typeParam === "personal_color" ? "personal_color" : "analysis";
+  const parseType = (value?: string | null): ReportType => {
+    if (value === "personal_color") return "personal_color";
+    if (value === "eye_wrinkle") return "eye_wrinkle";
+    return "skin";
+  };
+  const initialType: ReportType = parseType(typeParam);
 
   const [report, setReport] = useState<ReportDetailPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -78,8 +83,8 @@ export default function ReportDetailScreen() {
         if ((payload as { error?: string }).error) {
           throw new Error((payload as { error: string }).error);
         }
-        if ((payload.type === "personal_color" || payload.type === "analysis") && payload.type !== reportType) {
-          setReportType(payload.type);
+        if (payload.type && payload.type !== reportType) {
+          setReportType(parseType(payload.type));
         }
         setReport(payload);
       } catch (err) {
@@ -95,7 +100,8 @@ export default function ReportDetailScreen() {
 
   const heroImage = report?.thumbnail ?? initialThumb;
   const dateLabel = useMemo(() => formatDate(report?.createdAt ?? initialDate), [report?.createdAt, initialDate]);
-  const typeLabel = reportType === "personal_color" ? "퍼스널컬러 리포트" : "촬영 리포트";
+  const typeLabel =
+    reportType === "personal_color" ? "퍼스널컬러" : reportType === "eye_wrinkle" ? "눈 주름" : "피부";
 
   const renderBody = () => {
     if (loading) {
