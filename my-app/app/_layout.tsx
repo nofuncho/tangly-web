@@ -37,12 +37,14 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false }} initialRouteName="auth/index">
         <Stack.Screen name="auth/index" />
         <Stack.Screen name="auth/register" />
+        <Stack.Screen name="auth/email-login" />
         <Stack.Screen name="index" />
         <Stack.Screen name="capture" />
         <Stack.Screen name="eye-wrinkle/index" />
         <Stack.Screen name="personal-color/index" />
         <Stack.Screen name="reports/index" />
         <Stack.Screen name="reports/[id]" />
+        <Stack.Screen name="mypage/index" />
         <Stack.Screen
           name="modal"
           options={{

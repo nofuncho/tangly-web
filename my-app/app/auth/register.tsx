@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,6 +14,7 @@ import { useRouter } from "expo-router";
 
 import { supabase, upsertProfile } from "@/lib/supabase";
 import { SERVER_BASE_URL } from "@/lib/server";
+import TanglyLogo from "@/assets/images/logo-tangly.png";
 
 export default function RegisterScreen() {
   const router = useRouter();
@@ -79,10 +81,11 @@ export default function RegisterScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container} bounces={false}>
-        <Text style={styles.title}>이메일로 Tangly 가입</Text>
-        <Text style={styles.subtitle}>루틴을 저장하고 맞춤 추천을 받으려면 간단히 정보를 입력하세요.</Text>
-
+      <ScrollView contentContainerStyle={styles.container} bounces={false} showsVerticalScrollIndicator={false}>
+        <View style={styles.header}>
+          <Image source={TanglyLogo} style={styles.logo} resizeMode="contain" />
+          <Text style={styles.title}>회원가입</Text>
+        </View>
         <View style={styles.form}>
           <Text style={styles.label}>이름</Text>
           <TextInput
@@ -92,7 +95,7 @@ export default function RegisterScreen() {
             placeholder="홍길동"
             placeholderTextColor="#B9B9BF"
           />
-          <Text style={styles.label}>이메일</Text>
+          <Text style={styles.label}>이메일 주소</Text>
           <TextInput
             style={styles.input}
             value={email}
@@ -130,7 +133,7 @@ export default function RegisterScreen() {
             onPress={handleSubmit}
             disabled={disableSubmit}
           >
-            {submitting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.submitText}>가입하기</Text>}
+            {submitting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.submitText}>회원가입</Text>}
           </Pressable>
           <Pressable style={styles.backLink} onPress={() => router.back()}>
             <Text style={styles.backText}>이미 계정이 있나요? 로그인</Text>
@@ -145,47 +148,49 @@ export default function RegisterScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#EBDDF6",
   },
   container: {
     paddingHorizontal: 24,
     paddingBottom: 32,
   },
+  header: {
+    alignItems: "center",
+    paddingTop: 40,
+    paddingBottom: 24,
+  },
+  logo: {
+    width: 110,
+    height: 44,
+    marginBottom: 12,
+  },
   title: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: "700",
     color: "#1F1F24",
-    marginTop: 16,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: "#6D6D74",
-    marginTop: 8,
   },
   form: {
     marginTop: 28,
-    gap: 10,
+    gap: 12,
   },
   label: {
     fontSize: 13,
-    color: "#5B5B63",
+    color: "#6E6580",
   },
   input: {
-    borderWidth: 1,
-    borderColor: "#E3E3EA",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
+    borderRadius: 18,
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    fontSize: 16,
     color: "#1F1F24",
-    marginBottom: 6,
   },
   submitButton: {
     marginTop: 16,
-    borderRadius: 14,
-    paddingVertical: 14,
+    borderRadius: 18,
+    paddingVertical: 16,
     alignItems: "center",
-    backgroundColor: "#A884CC",
+    backgroundColor: "#A06BEA",
   },
   disabledButton: {
     backgroundColor: "#D7C9EC",

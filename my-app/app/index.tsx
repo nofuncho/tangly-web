@@ -42,10 +42,10 @@ const TAB_ITEMS: TabItem[] = [
   { key: "home", label: "홈", icon: "home", active: true },
   { key: "report", label: "리포트", icon: "report", action: "reports" },
   { key: "deal", label: "최저가", icon: "deal" },
-  { key: "mypage", label: "마이페이지", icon: "mypage" },
+  { key: "mypage", label: "마이페이지", icon: "mypage", action: "mypage" },
 ];
 
-type FeatureAction = "capture" | "reports" | "personalColor" | "eyeWrinkle";
+type FeatureAction = "capture" | "reports" | "personalColor" | "eyeWrinkle" | "mypage";
 type FeatureIconType = "lens" | "eye" | "palette" | "report" | "product";
 type FeatureItem = {
   key: string;
@@ -130,6 +130,10 @@ export default function HomeScreen() {
     if (!action) return;
     if (action === "reports") {
       handleOpenReports();
+      return;
+    }
+    if (action === "mypage") {
+      router.push("/mypage");
     }
   };
 
