@@ -44,12 +44,13 @@ export default function RootLayout() {
           <Stack.Screen name="index" />
           <Stack.Screen name="capture" />
           <Stack.Screen name="eye-wrinkle/index" />
-          <Stack.Screen name="personal-color/index" />
-          <Stack.Screen name="reports/index" />
-          <Stack.Screen name="reports/[id]" />
-          <Stack.Screen name="routine/index" />
-          <Stack.Screen name="mypage/index" />
-          <Stack.Screen name="onboarding/details" />
+        <Stack.Screen name="personal-color/index" />
+        <Stack.Screen name="reports/index" />
+        <Stack.Screen name="reports/[id]" />
+        <Stack.Screen name="routine/index" />
+        <Stack.Screen name="mypage/index" />
+        <Stack.Screen name="recommend/index" />
+        <Stack.Screen name="onboarding/details" />
           <Stack.Screen
             name="modal"
             options={{

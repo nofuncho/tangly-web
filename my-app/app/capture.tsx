@@ -531,6 +531,10 @@ export default function StepBasedCaptureScreen() {
       formData.append("focus_area", step.focusArea);
     }
     formData.append("session_id", sessionIdRef.current);
+    const currentUserId = await resolveUserId();
+    if (currentUserId) {
+      formData.append("user_id", currentUserId);
+    }
 
     const response = await fetch(UPLOAD_API_URL, {
       method: "POST",

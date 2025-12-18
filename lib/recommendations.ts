@@ -455,9 +455,7 @@ const pickRecommendations = (
       imageUrl: entry.product.image_url ?? null,
     });
 
-    if (deduped.length === 3) {
-      break;
-    }
+    // continue collecting beyond 3 to provide a richer list
   }
 
   return deduped;

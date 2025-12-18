@@ -10,6 +10,13 @@ import {
   type RecommendationPayload,
 } from "@/lib/recommendations";
 import { ensureAiReport, type AiReportContent } from "@/lib/ai-report";
+import {
+  fetchProfileDetails,
+  mapConcernToFocus,
+  pickPrimaryConcern,
+  concernToFriendlyLabel,
+  type ProfileDetails,
+} from "@/lib/profile-details";
 
 type MonthlyRoutineRow = {
   id: string;
@@ -119,8 +126,15 @@ export const ensureMonthlyRoutine = async (supabase: SupabaseClient, userId: str
     return toMonthlyPayload(existing);
   }
 
-  const context = await loadRecommendationContext(supabase, userId).catch(() => null);
-  const monthly = deriveMonthlyRoutine(context?.payload, context?.payload?.needs ?? []);
+  const [context, profile] = await Promise.all([
+    loadRecommendationContext(supabase, userId).catch(() => null),
+    fetchProfileDetails(supabase, userId).catch(() => null),
+  ]);
+  const monthly = deriveMonthlyRoutine(
+    context?.payload,
+    context?.payload?.needs ?? [],
+    profile ?? null
+  );
 
   const { data: inserted, error } = await supabase
     .from("monthly_routines")
@@ -157,7 +171,10 @@ export const ensureWeeklyRoutine = async (supabase: SupabaseClient, userId: stri
     return existing;
   }
 
-  const context = await loadRecommendationContext(supabase, userId);
+  const [context, profile] = await Promise.all([
+    loadRecommendationContext(supabase, userId),
+    fetchProfileDetails(supabase, userId).catch(() => null),
+  ]);
   const aiReport = await ensureAiReport({
     supabase,
     sessionId: context.sessionId,
@@ -165,9 +182,10 @@ export const ensureWeeklyRoutine = async (supabase: SupabaseClient, userId: stri
     payload: context.payload,
     photos: context.photos,
     oxResponses: context.ox,
+    profile: profile ?? null,
   });
 
-  const weekly = deriveWeeklyRoutine(context.payload, aiReport.payload ?? null);
+  const weekly = deriveWeeklyRoutine(context.payload, aiReport.payload ?? null, profile ?? null);
   const { data: inserted, error } = await supabase
     .from("weekly_routines")
     .insert({
@@ -287,7 +305,7 @@ export const toWeeklyPayload = (
   },
 });
 
-const loadRecommendationContext = async (
+export const loadRecommendationContext = async (
   supabase: SupabaseClient,
   userId: string
 ): Promise<RecommendationContext> => {
@@ -338,9 +356,19 @@ const loadRecommendationContext = async (
   };
 };
 
-const deriveMonthlyRoutine = (payload?: RecommendationPayload | null, needs: NeedEntry[] = []) => {
+const deriveMonthlyRoutine = (
+  payload?: RecommendationPayload | null,
+  needs: NeedEntry[] = [],
+  profile?: ProfileDetails | null
+) => {
+  const profileConcern = pickPrimaryConcern(profile?.concerns);
+  const profileConcernLabel = concernToFriendlyLabel(profileConcern);
   const primaryNeed = needs[0];
-  const goal = primaryNeed?.label ? `${primaryNeed.label} 집중하기` : "수분 밀도 유지";
+  const goal = profileConcernLabel
+    ? `${profileConcernLabel} 집중하기`
+    : primaryNeed?.label
+      ? `${primaryNeed.label} 집중하기`
+      : "수분 밀도 유지";
   const summary =
     payload?.items?.slice(0, 3).map((item) => `${item.title}: ${item.description}`) ??
     [
@@ -352,12 +380,19 @@ const deriveMonthlyRoutine = (payload?: RecommendationPayload | null, needs: Nee
     payload?.items?.find((item) => item.status === "주의")?.description ??
     "피부가 예민하면 하루 정도 쉬어가도 충분해요.";
 
-  const habits =
+  const baseHabits =
     payload?.tips?.slice(0, 2) ??
     [
       "주 2회 미지근한 스팀타월로 얼굴을 감싸 주세요.",
       "잠들기 전 미온수 한 잔으로 몸을 편안하게 해 주세요.",
     ];
+
+  const habits = profileConcernLabel
+    ? [
+        `${profileConcernLabel} 완화를 위해 주 3회 루틴만 지켜도 충분합니다.`,
+        ...baseHabits,
+      ].slice(0, 3)
+    : baseHabits;
 
   return {
     goal,
@@ -370,14 +405,24 @@ const deriveMonthlyRoutine = (payload?: RecommendationPayload | null, needs: Nee
 
 const deriveWeeklyRoutine = (
   payload: RecommendationPayload,
-  ai?: AiReportContent | null
+  ai?: AiReportContent | null,
+  profile?: ProfileDetails | null
 ) => {
   const range = getWeekRange();
-  const focus = ai?.focus
-    ? focusLabel(ai.focus.topic)
-    : payload.needs[0]?.label ?? "수분";
+  const profileConcern = pickPrimaryConcern(profile?.concerns);
+  const profileConcernLabel = concernToFriendlyLabel(profileConcern);
+  const fallbackTopic =
+    profileConcern
+      ? mapConcernToFocus(profileConcern)
+      : focusLabelKey(payload.needs[0]?.label ?? "");
+  const focusTopic = ai?.focus?.topic ?? fallbackTopic;
+  const focus = focusLabel(focusTopic);
 
-  const focusReason = ai?.focus?.reason ?? "이번 주는 느슨해진 루틴을 다시 붙잡는 데 집중해요.";
+  const focusReason =
+    ai?.focus?.reason ??
+    (profileConcernLabel
+      ? `${profileConcernLabel} 완화를 위해 이번 주 루틴 강도를 조정했어요.`
+      : "이번 주는 느슨해진 루틴을 다시 붙잡는 데 집중해요.");
   const conclusion =
     ai?.oneLiner ?? "주 3회만 지켜도 충분합니다. 하루 정도는 쉬어가도 괜찮아요.";
 
@@ -391,7 +436,7 @@ const deriveWeeklyRoutine = (
           title: action.title,
           description: action.description,
         }))
-      : buildFallbackActions(focusLabelKey(focus));
+      : buildFallbackActions(focusTopic);
 
   const warnings =
     ai?.warnings?.length

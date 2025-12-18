@@ -9,6 +9,7 @@ import {
 } from "@/lib/recommendations";
 import { buildEyeWrinkleDetailPayload } from "@/lib/eye-wrinkle-report";
 import { ensureAiReport, type AiReportEnvelope } from "@/lib/ai-report";
+import { fetchProfileDetails } from "@/lib/profile-details";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -44,7 +45,7 @@ export async function GET(
 
     const { data: session, error: sessionError } = await supabase
       .from("analysis_sessions")
-      .select("id, created_at, source")
+      .select("id, created_at, source, user_id")
       .eq("id", sessionId)
       .single();
 
@@ -105,6 +106,8 @@ export async function GET(
     });
 
     const thumbnail = selectThumbnail((photosData ?? []) as PhotoRow[]);
+    const profile =
+      session.user_id ? await fetchProfileDetails(supabase, session.user_id).catch(() => null) : null;
     const aiReport = await ensureAiReport({
       supabase,
       sessionId,
@@ -112,6 +115,7 @@ export async function GET(
       payload,
       photos: (photosData ?? []) as PhotoRow[],
       oxResponses: (oxData ?? []) as OxResponseRow[],
+      profile,
     });
 
     return NextResponse.json({

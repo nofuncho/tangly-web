@@ -32,6 +32,7 @@ export async function POST(req: Request) {
     const shotTypeRaw = formData.get("shot_type");
     const focusAreaRaw = formData.get("focus_area");
     const sessionIdRaw = formData.get("session_id");
+    const userIdRaw = formData.get("user_id");
 
     if (!(file instanceof File)) {
       return NextResponse.json(
@@ -68,6 +69,8 @@ export async function POST(req: Request) {
         ? focusAreaRaw.toLowerCase()
         : null;
     const sessionId = sessionIdRaw.trim();
+    const userId =
+      typeof userIdRaw === "string" && userIdRaw.trim().length > 0 ? userIdRaw.trim() : null;
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const fileName = `${Date.now()}-${file.name || "upload"}`;
@@ -82,7 +85,17 @@ export async function POST(req: Request) {
       .eq("id", sessionId)
       .maybeSingle<{ user_id: string | null }>();
 
-    const derivedUserId = sessionRow?.user_id ?? null;
+    const derivedUserId = sessionRow?.user_id ?? userId ?? null;
+
+    if (!sessionRow?.user_id && userId) {
+      const { error: sessionUpdateError } = await supabase
+        .from("analysis_sessions")
+        .update({ user_id: userId })
+        .eq("id", sessionId);
+      if (sessionUpdateError) {
+        console.warn("Failed to backfill session user_id", sessionUpdateError);
+      }
+    }
 
     /* 1️⃣ Storage 업로드 */
     const { data: uploadData, error: uploadError } = await supabase.storage

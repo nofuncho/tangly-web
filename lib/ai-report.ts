@@ -7,6 +7,7 @@ import type {
   RecommendationPayload,
   ReportItem,
 } from "@/lib/recommendations";
+import type { ProfileDetails } from "@/lib/profile-details";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL =
@@ -77,6 +78,7 @@ type BuildAiReportParams = {
   payload: RecommendationPayload;
   photos: PhotoRow[];
   oxResponses: OxResponseRow[];
+  profile?: ProfileDetails | null;
 };
 
 export const ensureAiReport = async ({
@@ -86,6 +88,7 @@ export const ensureAiReport = async ({
   payload,
   photos,
   oxResponses,
+  profile,
 }: BuildAiReportParams): Promise<AiReportEnvelope> => {
   try {
     const { data: cached } = await supabase
@@ -115,6 +118,7 @@ export const ensureAiReport = async ({
       sessionCreatedAt,
       photos,
       oxResponses,
+      profile,
     });
 
     if (!aiResponse.success || !aiResponse.payload) {
@@ -171,6 +175,7 @@ type AiRequestInput = {
   sessionCreatedAt?: string | null;
   photos: PhotoRow[];
   oxResponses: OxResponseRow[];
+  profile?: ProfileDetails | null;
 };
 
 const requestAiReport = async ({
@@ -179,6 +184,7 @@ const requestAiReport = async ({
   sessionCreatedAt,
   photos,
   oxResponses,
+  profile,
 }: AiRequestInput): Promise<AiRequestResult> => {
   const body = {
     model: OPENAI_MODEL,
@@ -199,6 +205,7 @@ const requestAiReport = async ({
           report,
           photos,
           oxResponses,
+          profile,
         }),
       },
     ],
@@ -255,6 +262,7 @@ type PromptBuilderInput = {
   report: RecommendationPayload;
   photos: PhotoRow[];
   oxResponses: OxResponseRow[];
+  profile?: ProfileDetails | null;
 };
 
 const buildPromptPayload = ({
@@ -263,6 +271,7 @@ const buildPromptPayload = ({
   report,
   photos,
   oxResponses,
+  profile,
 }: PromptBuilderInput) => {
   const template = {
     instructions: {
@@ -305,6 +314,13 @@ const buildPromptPayload = ({
       focus: photo.focus_area,
       capturedAt: photo.created_at,
     })),
+    profile: profile
+      ? {
+          gender: profile.gender,
+          ageRange: profile.ageRange,
+          concerns: profile.concerns,
+        }
+      : null,
   };
 
   return JSON.stringify(template, null, 2);

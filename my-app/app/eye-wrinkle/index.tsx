@@ -201,6 +201,10 @@ export default function EyeWrinkleScreen() {
     formData.append("shot_type", shotType);
     formData.append("focus_area", step.id === "open" ? "eyes_open" : "eyes_closed");
     formData.append("session_id", sessionIdRef.current);
+    const userId = await resolveUserId();
+    if (userId) {
+      formData.append("user_id", userId);
+    }
 
     const response = await fetch(UPLOAD_API_URL, {
       method: "POST",

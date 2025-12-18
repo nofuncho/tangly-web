@@ -43,7 +43,7 @@ const TAB_ITEMS: TabItem[] = [
   { key: "home", label: "홈", icon: "home", active: true },
   { key: "report", label: "리포트", icon: "report", action: "reports" },
   { key: "routine", label: "루틴", icon: "routine", action: "routine" },
-  { key: "recommend", label: "추천", icon: "recommend" },
+  { key: "recommend", label: "추천", icon: "recommend", action: "recommend" },
   { key: "mypage", label: "마이", icon: "mypage", action: "mypage" },
 ];
 
@@ -53,7 +53,8 @@ type FeatureAction =
   | "personalColor"
   | "eyeWrinkle"
   | "mypage"
-  | "routine";
+  | "routine"
+  | "recommend";
 type FeatureIconType = "lens" | "eye" | "palette" | "report" | "product";
 type FeatureItem = {
   key: string;
@@ -62,7 +63,7 @@ type FeatureItem = {
   action?: FeatureAction;
 };
 
-type TabAction = "reports" | "mypage" | "routine";
+type TabAction = "reports" | "mypage" | "routine" | "recommend";
 type TabIconType = "home" | "report" | "routine" | "recommend" | "mypage";
 type TabItem = {
   key: string;
@@ -138,6 +139,10 @@ export default function HomeScreen() {
       router.push("/routine");
       return;
     }
+    if (action === "recommend") {
+      router.push("/recommend");
+      return;
+    }
   };
 
   const handleTabPress = (action?: TabAction) => {
@@ -148,6 +153,10 @@ export default function HomeScreen() {
     }
     if (action === "routine") {
       router.push("/routine");
+      return;
+    }
+    if (action === "recommend") {
+      router.push("/recommend");
       return;
     }
     if (action === "mypage") {
