@@ -8,13 +8,14 @@ import * as SplashScreen from "expo-splash-screen";
 import "react-native-reanimated";
 
 import { useColorScheme } from "@/hooks/use-color-scheme";
+import PretendardFont from "../assets/fonts/PretendardVariable.ttf";
 
 void SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const [fontsLoaded] = useFonts({
-    Pretendard: require("../assets/fonts/PretendardVariable.ttf"),
+    Pretendard: PretendardFont,
   });
 
   useEffect(() => {

@@ -24,7 +24,12 @@ export default function ReportPage() {
   );
 }
 
-function Item({ label, score }: any) {
+type ItemProps = {
+  label: string;
+  score: number;
+};
+
+function Item({ label, score }: ItemProps) {
   return (
     <div>
       <div className="flex justify-between mb-1">

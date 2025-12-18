@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useState } from "react";
 
 type UploadState = "idle" | "uploading" | "success" | "error";
@@ -100,11 +101,17 @@ export default function UploadTest() {
             >
               {uploadedUrl}
             </a>
-            <img
-              src={uploadedUrl}
-              alt="uploaded preview"
-              className="mt-3 max-h-80 w-full rounded-lg object-contain"
-            />
+            <div className="relative mt-3 w-full">
+              <Image
+                src={uploadedUrl}
+                alt="업로드된 이미지 미리보기"
+                width={800}
+                height={800}
+                sizes="(max-width: 640px) 100vw, 640px"
+                unoptimized
+                className="max-h-80 w-full rounded-lg object-contain"
+              />
+            </div>
           </div>
         )}
       </div>

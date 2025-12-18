@@ -1,21 +1,15 @@
-import { useEffect, useState } from 'react';
-import { useColorScheme as useRNColorScheme } from 'react-native';
+import { useColorScheme as useRNColorScheme } from "react-native";
 
 /**
- * To support static rendering, this value needs to be re-calculated on the client side for web
+ * To support static rendering, fall back to light mode until the browser can provide the preference.
  */
 export function useColorScheme() {
-  const [hasHydrated, setHasHydrated] = useState(false);
-
-  useEffect(() => {
-    setHasHydrated(true);
-  }, []);
-
   const colorScheme = useRNColorScheme();
+  const isBrowser = typeof window !== "undefined";
 
-  if (hasHydrated) {
-    return colorScheme;
+  if (!isBrowser) {
+    return "light";
   }
 
-  return 'light';
+  return colorScheme ?? "light";
 }

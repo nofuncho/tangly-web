@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -208,7 +208,7 @@ export default function StepBasedCaptureScreen() {
   const [oxError, setOxError] = useState<string | null>(null);
   const [oxCompleted, setOxCompleted] = useState(false);
 
-  const analysisTimers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const analysisTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const stepStatesRef = useRef(stepStates);
   const oxAnswersRef = useRef(oxAnswers);
   const sessionIdRef = useRef<string | null>(null);
@@ -258,7 +258,7 @@ export default function StepBasedCaptureScreen() {
     if (flowStage === "capture" && allCompleted) {
       beginAnalysisPhase();
     }
-  }, [flowStage, allCompleted]);
+  }, [flowStage, allCompleted, beginAnalysisPhase]);
 
   const ensurePermission = async () => {
     if (permission?.granted) return true;
@@ -283,7 +283,7 @@ export default function StepBasedCaptureScreen() {
     return data.sessionId as string;
   };
 
-  const updateSessionStatus = async (status: SessionStatus) => {
+  const updateSessionStatus = useCallback(async (status: SessionStatus) => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
     try {
@@ -299,16 +299,15 @@ export default function StepBasedCaptureScreen() {
     } catch (error) {
       console.warn("Failed to update session status", error);
     }
-  };
+  }, []);
 
-  const refreshServerReport = async (
-    options?: { loadingMessage?: string; doneMessage?: string }
-  ) => {
-    const fallbackToLocalReport = () => {
-      const fallback = buildReportFromQuality(
-        stepStatesRef.current,
-        sessionIdRef.current,
-        oxAnswersRef.current
+  const refreshServerReport = useCallback(
+    async (options?: { loadingMessage?: string; doneMessage?: string }) => {
+      const fallbackToLocalReport = () => {
+        const fallback = buildReportFromQuality(
+          stepStatesRef.current,
+          sessionIdRef.current,
+          oxAnswersRef.current
       );
       setReportData(fallback);
       setGlobalMessage("기본 리포트를 표시합니다.");
@@ -358,7 +357,9 @@ export default function StepBasedCaptureScreen() {
     } finally {
       setFlowStage("report");
     }
-  };
+    },
+    []
+  );
 
   const openOxStage = () => {
     if (!sessionIdRef.current) {
@@ -653,7 +654,7 @@ export default function StepBasedCaptureScreen() {
     }
   };
 
-  const beginAnalysisPhase = () => {
+  const beginAnalysisPhase = useCallback(() => {
     setFlowStage("analyzing");
     setGlobalMessage("Tangly AI가 촬영 이미지를 분석 중입니다.");
     updateSessionStatus("analyzing");
@@ -693,7 +694,7 @@ export default function StepBasedCaptureScreen() {
       }, 1600 * (idx + 1));
       analysisTimers.current.push(timer as ReturnType<typeof setTimeout>);
     });
-  };
+  }, [refreshServerReport, updateSessionStatus]);
 
   const isCaptureStage = flowStage === "capture" || flowStage === "intro";
 
