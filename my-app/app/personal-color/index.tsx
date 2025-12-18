@@ -19,6 +19,7 @@ import {
   type PersonalColorResult,
 } from "@/lib/personal-color";
 import { SERVER_BASE_URL } from "@/lib/server";
+import { useRequireProfileDetails } from "@/hooks/use-profile-details";
 
 type FaceDetectorModule = typeof import("expo-face-detector");
 let NativeFaceDetector: FaceDetectorModule | null = null;
@@ -226,6 +227,7 @@ export default function PersonalColorSelectorScreen() {
   const router = useRouter();
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
+  const { loading: detailsChecking } = useRequireProfileDetails();
 
   const [stage, setStage] = useState<FlowStage>("intro");
   const [capturing, setCapturing] = useState(false);
@@ -576,6 +578,17 @@ export default function PersonalColorSelectorScreen() {
     );
   };
 
+  if (detailsChecking) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.centerState}>
+          <ActivityIndicator color="#A884CC" />
+          <Text style={styles.centerText}>맞춤 정보를 불러오는 중입니다...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       {stage === "intro" && renderIntro()}
@@ -670,6 +683,16 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#FFFFFF",
+  },
+  centerState: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  centerText: {
+    fontSize: 14,
+    color: "#6F6F73",
   },
   introWrapper: {
     flex: 1,

@@ -12,6 +12,7 @@ import { useRouter } from "expo-router";
 import { Image } from "expo-image";
 
 import { SERVER_BASE_URL, buildServerUrl } from "@/lib/server";
+import { useRequireProfileDetails } from "@/hooks/use-profile-details";
 
 type ArchiveType = "skin" | "eye_wrinkle" | "personal_color";
 
@@ -36,6 +37,7 @@ export default function ReportArchiveScreen() {
   const [reports, setReports] = useState<ArchiveItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { loading: checkingDetails } = useRequireProfileDetails();
 
   useEffect(() => {
     const loadReports = async () => {
@@ -66,7 +68,7 @@ export default function ReportArchiveScreen() {
   }, []);
 
   const renderContent = () => {
-    if (loading) {
+    if (loading || checkingDetails) {
       return (
         <View style={styles.centerState}>
           <ActivityIndicator />

@@ -9,6 +9,7 @@ import "react-native-reanimated";
 
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import PretendardFont from "../assets/fonts/PretendardVariable.ttf";
+import { ProfileDetailsProvider } from "@/contexts/profile-details-context";
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -34,28 +35,32 @@ export default function RootLayout() {
   }
 
   return (
-    <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-      <Stack screenOptions={{ headerShown: false }} initialRouteName="auth/index">
-        <Stack.Screen name="auth/index" />
-        <Stack.Screen name="auth/register" />
-        <Stack.Screen name="auth/email-login" />
-        <Stack.Screen name="index" />
-        <Stack.Screen name="capture" />
-        <Stack.Screen name="eye-wrinkle/index" />
-        <Stack.Screen name="personal-color/index" />
-        <Stack.Screen name="reports/index" />
-        <Stack.Screen name="reports/[id]" />
-        <Stack.Screen name="mypage/index" />
-        <Stack.Screen
-          name="modal"
-          options={{
-            presentation: "modal",
-            title: "Modal",
-            headerShown: true,
-          }}
-        />
-      </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+    <ProfileDetailsProvider>
+      <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+        <Stack screenOptions={{ headerShown: false }} initialRouteName="auth/index">
+          <Stack.Screen name="auth/index" />
+          <Stack.Screen name="auth/register" />
+          <Stack.Screen name="auth/email-login" />
+          <Stack.Screen name="index" />
+          <Stack.Screen name="capture" />
+          <Stack.Screen name="eye-wrinkle/index" />
+          <Stack.Screen name="personal-color/index" />
+          <Stack.Screen name="reports/index" />
+          <Stack.Screen name="reports/[id]" />
+          <Stack.Screen name="routine/index" />
+          <Stack.Screen name="mypage/index" />
+          <Stack.Screen name="onboarding/details" />
+          <Stack.Screen
+            name="modal"
+            options={{
+              presentation: "modal",
+              title: "Modal",
+              headerShown: true,
+            }}
+          />
+        </Stack>
+        <StatusBar style="auto" />
+      </ThemeProvider>
+    </ProfileDetailsProvider>
   );
 }

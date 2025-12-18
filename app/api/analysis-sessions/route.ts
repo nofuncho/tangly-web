@@ -21,6 +21,10 @@ export async function POST(req: Request) {
     const payload = (await req.json().catch(() => null)) ?? {};
     const source = typeof payload?.source === "string" ? payload.source : "expo_app";
     const status = typeof payload?.status === "string" ? payload.status : "capturing";
+    const userId =
+      typeof payload?.userId === "string" && payload.userId.trim().length > 0
+        ? payload.userId.trim()
+        : null;
     const sessionId =
       typeof payload?.sessionId === "string" && payload.sessionId
         ? payload.sessionId
@@ -32,6 +36,7 @@ export async function POST(req: Request) {
         id: sessionId,
         source,
         status,
+        user_id: userId,
       })
       .select("id, status")
       .single();

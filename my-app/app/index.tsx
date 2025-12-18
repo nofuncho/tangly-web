@@ -5,6 +5,7 @@ import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { supabase } from "@/lib/supabase";
+import { useRequireProfileDetails } from "@/hooks/use-profile-details";
 
 const COLORS = {
   primary: "#A884CC",
@@ -41,11 +42,18 @@ const CONTENT_CARDS = [
 const TAB_ITEMS: TabItem[] = [
   { key: "home", label: "홈", icon: "home", active: true },
   { key: "report", label: "리포트", icon: "report", action: "reports" },
-  { key: "deal", label: "최저가", icon: "deal" },
-  { key: "mypage", label: "마이페이지", icon: "mypage", action: "mypage" },
+  { key: "routine", label: "루틴", icon: "routine", action: "routine" },
+  { key: "recommend", label: "추천", icon: "recommend" },
+  { key: "mypage", label: "마이", icon: "mypage", action: "mypage" },
 ];
 
-type FeatureAction = "capture" | "reports" | "personalColor" | "eyeWrinkle" | "mypage";
+type FeatureAction =
+  | "capture"
+  | "reports"
+  | "personalColor"
+  | "eyeWrinkle"
+  | "mypage"
+  | "routine";
 type FeatureIconType = "lens" | "eye" | "palette" | "report" | "product";
 type FeatureItem = {
   key: string;
@@ -54,8 +62,8 @@ type FeatureItem = {
   action?: FeatureAction;
 };
 
-type TabAction = FeatureAction;
-type TabIconType = "home" | "report" | "deal" | "mypage";
+type TabAction = "reports" | "mypage" | "routine";
+type TabIconType = "home" | "report" | "routine" | "recommend" | "mypage";
 type TabItem = {
   key: string;
   label: string;
@@ -67,6 +75,7 @@ type TabItem = {
 export default function HomeScreen() {
   const router = useRouter();
   const [checkingSession, setCheckingSession] = useState(true);
+  const { loading: checkingDetails } = useRequireProfileDetails();
 
   useEffect(() => {
     let active = true;
@@ -123,6 +132,11 @@ export default function HomeScreen() {
     }
     if (action === "reports") {
       handleOpenReports();
+      return;
+    }
+    if (action === "routine") {
+      router.push("/routine");
+      return;
     }
   };
 
@@ -132,12 +146,16 @@ export default function HomeScreen() {
       handleOpenReports();
       return;
     }
+    if (action === "routine") {
+      router.push("/routine");
+      return;
+    }
     if (action === "mypage") {
       router.push("/mypage");
     }
   };
 
-  if (checkingSession) {
+  if (checkingSession || checkingDetails) {
     return (
       <SafeAreaView style={styles.loadingSafeArea}>
         <StatusBar style="dark" />
@@ -309,12 +327,25 @@ function TabIcon({ type, active }: { type: TabIconType; active?: boolean }) {
           <View style={[styles.tabReportLine, { width: 10, backgroundColor: color }]} />
         </View>
       );
-    case "deal":
+    case "routine":
       return (
-        <View style={styles.tabDeal}>
-          <View style={[styles.coinOuter, { borderColor: color }]}> 
-            <View style={[styles.coinInner, { backgroundColor: color }]} />
+        <View style={styles.tabRoutine}>
+          <View style={[styles.tabRoutineLine, { backgroundColor: color }]} />
+          <View style={[styles.tabRoutineDots, { borderColor: color }]}>
+            <View style={[styles.tabRoutineDot, { backgroundColor: color }]} />
+            <View style={[styles.tabRoutineDot, { backgroundColor: color }]} />
+            <View style={[styles.tabRoutineDot, { backgroundColor: color }]} />
           </View>
+        </View>
+      );
+    case "recommend":
+      return (
+        <View style={styles.tabRecommend}>
+          <View style={[styles.tabRecommendCard, { borderColor: color }]}>
+            <View style={[styles.tabRecommendLine, { backgroundColor: color, width: 12 }]} />
+            <View style={[styles.tabRecommendLine, { backgroundColor: color, width: 16 }]} />
+          </View>
+          <View style={[styles.tabRecommendBadge, { borderColor: color }]} />
         </View>
       );
     case "mypage":
@@ -629,15 +660,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-around",
     alignItems: "center",
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     borderTopWidth: 1,
     borderColor: COLORS.divider,
     backgroundColor: COLORS.background,
   },
   tabItem: {
     alignItems: "center",
-    gap: 4,
+    gap: 2,
   },
   tabLabel: {
     fontSize: 11,
@@ -769,21 +800,51 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
   },
-  tabDeal: {
+  tabRoutine: {
     alignItems: "center",
   },
-  coinOuter: {
-    width: 20,
-    height: 20,
+  tabRoutineLine: {
+    width: 22,
+    height: 4,
+    borderRadius: 2,
+    marginBottom: 2,
+  },
+  tabRoutineDots: {
+    flexDirection: "row",
+    borderWidth: 1,
     borderRadius: 10,
-    borderWidth: 2,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    gap: 2,
+  },
+  tabRoutineDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+  },
+  tabRecommend: {
+    alignItems: "center",
+  },
+  tabRecommendCard: {
+    width: 26,
+    height: 16,
+    borderRadius: 6,
+    borderWidth: 1,
     justifyContent: "center",
     alignItems: "center",
+    paddingVertical: 2,
+    gap: 2,
   },
-  coinInner: {
-    width: 6,
-    height: 6,
+  tabRecommendLine: {
+    height: 2,
+    borderRadius: 1,
+  },
+  tabRecommendBadge: {
+    width: 10,
+    height: 10,
     borderRadius: 3,
+    borderWidth: 1,
+    marginTop: 2,
   },
   tabMy: {
     alignItems: "center",

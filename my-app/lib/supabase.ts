@@ -1,6 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { createClient } from "@supabase/supabase-js";
 
+import type { ProfileDetails } from "@/lib/profile-details";
+
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? "";
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
@@ -41,3 +43,48 @@ export const upsertProfile = async ({
   await supabase.from("profiles").upsert(payload, { onConflict: "id" });
 };
 
+type SaveProfileDetailsInput = {
+  userId?: string | null;
+  gender: string;
+  ageRange: string;
+  concerns: string[];
+  birthYear?: number | null;
+};
+
+export const saveProfileDetails = async ({
+  userId,
+  gender,
+  ageRange,
+  concerns,
+  birthYear,
+}: SaveProfileDetailsInput): Promise<ProfileDetails> => {
+  if (!userId) {
+    throw new Error("로그인을 확인해주세요.");
+  }
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("metadata")
+    .eq("id", userId)
+    .maybeSingle<{ metadata: Record<string, unknown> | null }>();
+
+  const metadata = (profile?.metadata ?? {}) as Record<string, unknown>;
+  const details: ProfileDetails = {
+    gender,
+    ageRange,
+    concerns,
+    birthYear: birthYear ?? null,
+    completedAt: new Date().toISOString(),
+  };
+  const nextMetadata = {
+    ...metadata,
+    profileDetails: details,
+  };
+
+  const { error } = await supabase.from("profiles").update({ metadata: nextMetadata }).eq("id", userId);
+  if (error) {
+    throw error;
+  }
+
+  return details;
+};

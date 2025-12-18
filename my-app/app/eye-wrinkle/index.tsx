@@ -5,6 +5,8 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { useRouter } from "expo-router";
 
 import { SERVER_BASE_URL, UPLOAD_API_URL } from "@/lib/server";
+import { supabase } from "@/lib/supabase";
+import { useRequireProfileDetails } from "@/hooks/use-profile-details";
 
 type FlowStage = "capture" | "analyzing" | "result";
 type SessionStatus = "capturing" | "analyzing" | "report_ready";
@@ -79,6 +81,7 @@ const createStepStates = () => STEP_CONFIGS.map(() => ({ previewUri: null, uploa
 export default function EyeWrinkleScreen() {
   const router = useRouter();
   const [permission, requestPermission] = useCameraPermissions();
+  const { loading: detailsChecking } = useRequireProfileDetails();
   const cameraRef = useRef<CameraView>(null);
   const sessionIdRef = useRef<string | null>(null);
   const [flowStage, setFlowStage] = useState<FlowStage>("capture");
@@ -90,12 +93,40 @@ export default function EyeWrinkleScreen() {
   const [uploadingStep, setUploadingStep] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [completedSessionId, setCompletedSessionId] = useState<string | null>(null);
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!permission?.granted) {
       requestPermission();
     }
   }, [permission, requestPermission]);
+
+  useEffect(() => {
+    let active = true;
+    supabase.auth
+      .getUser()
+      .then(({ data }) => {
+        if (!active) return;
+        setAuthUserId(data.user?.id ?? null);
+      })
+      .catch(() => {
+        if (!active) return;
+        setAuthUserId(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const resolveUserId = useCallback(async () => {
+    if (authUserId) {
+      return authUserId;
+    }
+    const { data } = await supabase.auth.getUser();
+    const id = data.user?.id ?? null;
+    setAuthUserId(id);
+    return id;
+  }, [authUserId]);
 
   const prepareSession = useCallback(async () => {
     if (!SERVER_BASE_URL) {
@@ -105,10 +136,11 @@ export default function EyeWrinkleScreen() {
     try {
       setCreatingSession(true);
       setSessionError(null);
+      const userId = await resolveUserId();
       const response = await fetch(`${SERVER_BASE_URL}/api/analysis-sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: "eye_wrinkle", status: "capturing" }),
+        body: JSON.stringify({ source: "eye_wrinkle", status: "capturing", userId }),
       });
       const payload = await response.json();
       if (!response.ok || !payload?.sessionId) {
@@ -122,7 +154,7 @@ export default function EyeWrinkleScreen() {
     } finally {
       setCreatingSession(false);
     }
-  }, []);
+  }, [resolveUserId, SERVER_BASE_URL]);
 
   useEffect(() => {
     prepareSession();
@@ -270,6 +302,17 @@ export default function EyeWrinkleScreen() {
     });
   };
 
+  if (detailsChecking) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.centerState}>
+          <ActivityIndicator color="#A884CC" />
+          <Text style={styles.centerText}>맞춤 정보를 불러오는 중입니다...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.header}>
@@ -382,6 +425,16 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#FFFFFF",
+  },
+  centerState: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  centerText: {
+    fontSize: 14,
+    color: "#6D6D74",
   },
   header: {
     paddingHorizontal: 20,

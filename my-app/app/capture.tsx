@@ -12,7 +12,9 @@ import {
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { SERVER_BASE_URL, UPLOAD_API_URL } from "@/lib/server";
+import { supabase } from "@/lib/supabase";
 import { optimizePhoto } from "@/lib/photo-utils";
+import { useRequireProfileDetails } from "@/hooks/use-profile-details";
 
 type FlowStage = "intro" | "capture" | "ox" | "analyzing" | "report";
 type CaptureState = "idle" | "uploading" | "completed" | "error";
@@ -190,6 +192,7 @@ const isTransientNetworkError = (error: unknown) => {
 export default function StepBasedCaptureScreen() {
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
+  const { loading: detailsChecking } = useRequireProfileDetails();
   const [flowStage, setFlowStage] = useState<FlowStage>("intro");
   const [flashVisible, setFlashVisible] = useState(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
@@ -254,11 +257,40 @@ export default function StepBasedCaptureScreen() {
     [oxAnswers]
   );
 
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    supabase.auth
+      .getUser()
+      .then(({ data }) => {
+        if (!active) return;
+        setAuthUserId(data.user?.id ?? null);
+      })
+      .catch(() => {
+        if (!active) return;
+        setAuthUserId(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   useEffect(() => {
     if (flowStage === "capture" && allCompleted) {
       beginAnalysisPhase();
     }
   }, [flowStage, allCompleted, beginAnalysisPhase]);
+
+  const resolveUserId = useCallback(async () => {
+    if (authUserId) {
+      return authUserId;
+    }
+    const { data } = await supabase.auth.getUser();
+    const id = data.user?.id ?? null;
+    setAuthUserId(id);
+    return id;
+  }, [authUserId]);
 
   const ensurePermission = async () => {
     if (permission?.granted) return true;
@@ -271,10 +303,11 @@ export default function StepBasedCaptureScreen() {
       throw new Error("서버 API 주소가 설정되지 않았습니다.");
     }
 
+    const currentUserId = await resolveUserId();
     const res = await fetch(`${SERVER_BASE_URL}/api/analysis-sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source: "expo_app", status: "capturing" }),
+      body: JSON.stringify({ source: "expo_app", status: "capturing", userId: currentUserId }),
     });
     const data = await res.json();
     if (!res.ok || !data?.sessionId) {
@@ -702,6 +735,14 @@ export default function StepBasedCaptureScreen() {
     return (
       <SafeAreaView style={styles.safeArea}>
         {renderCamera()}
+      </SafeAreaView>
+    );
+  }
+
+  if (detailsChecking) {
+    return (
+      <SafeAreaView style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+        <ActivityIndicator color="#A884CC" />
       </SafeAreaView>
     );
   }

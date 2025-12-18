@@ -8,6 +8,7 @@ import {
   type ProductRow,
 } from "@/lib/recommendations";
 import { buildEyeWrinkleDetailPayload } from "@/lib/eye-wrinkle-report";
+import { ensureAiReport, type AiReportEnvelope } from "@/lib/ai-report";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -72,6 +73,7 @@ export async function GET(
       return NextResponse.json({
         ...payload,
         type: "eye_wrinkle",
+        aiReport: null as AiReportEnvelope | null,
       });
     }
 
@@ -103,6 +105,14 @@ export async function GET(
     });
 
     const thumbnail = selectThumbnail((photosData ?? []) as PhotoRow[]);
+    const aiReport = await ensureAiReport({
+      supabase,
+      sessionId,
+      sessionCreatedAt: session.created_at,
+      payload,
+      photos: (photosData ?? []) as PhotoRow[],
+      oxResponses: (oxData ?? []) as OxResponseRow[],
+    });
 
     return NextResponse.json({
       type: "skin",
@@ -110,6 +120,7 @@ export async function GET(
       createdAt: session.created_at,
       thumbnail,
       ...payload,
+      aiReport,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Server error";
@@ -143,6 +154,7 @@ const fetchPersonalColorReport = async (supabase: SupabaseClient, reportId: stri
     needs: (payload.needs as unknown[]) ?? [],
     recommendations: (payload.recommendations as unknown[]) ?? [],
     extras: payload.extras ?? null,
+    aiReport: null as AiReportEnvelope | null,
   });
 };
 

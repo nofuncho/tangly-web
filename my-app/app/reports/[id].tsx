@@ -16,10 +16,19 @@ import {
   type ProductRecommendation,
   type ReportItem,
 } from "@/types/report";
+import type {
+  AiActionFrequency,
+  AiFocusTopic,
+  AiKeyFindingStatus,
+  AiReportEnvelope,
+} from "@/types/ai-report";
 import { buildServerUrl } from "@/lib/server";
 import { type PersonalColorExtras } from "@/lib/personal-color";
+import { supabase } from "@/lib/supabase";
+import { useRequireProfileDetails } from "@/hooks/use-profile-details";
 
 type ReportType = "skin" | "eye_wrinkle" | "personal_color";
+type PlanType = "free" | "pro";
 
 type ReportDetailPayload = {
   type: ReportType;
@@ -33,12 +42,42 @@ type ReportDetailPayload = {
   needs: NeedEntry[];
   recommendations: ProductRecommendation[];
   extras?: PersonalColorExtras | null;
+  aiReport?: AiReportEnvelope | null;
 };
 
 type ApiResponse = ReportDetailPayload & { error?: string };
 
 const SKELETON_PLACEHOLDER =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIW2NkYGD4DwABBAEAfZcb1gAAAABJRU5ErkJggg==";
+
+const KEY_STATUS_LABELS: Record<AiKeyFindingStatus, string> = {
+  good: "좋음",
+  neutral: "보통",
+  caution: "주의",
+};
+
+const KEY_STATUS_COLORS: Record<
+  AiKeyFindingStatus,
+  { background: string; text: string }
+> = {
+  good: { background: "#F0F8F2", text: "#2D8B5C" },
+  neutral: { background: "#F3F3F6", text: "#6F6F73" },
+  caution: { background: "#FFF5F3", text: "#C0392B" },
+};
+
+const FOCUS_LABELS: Record<AiFocusTopic, string> = {
+  hydration: "수분",
+  elasticity: "탄력",
+  wrinkle: "주름",
+  radiance: "광채",
+  trouble: "트러블",
+};
+
+const FREQUENCY_LABELS: Record<AiActionFrequency, string> = {
+  daily: "매일",
+  weekly: "주 1회",
+  three_per_week: "주 3회",
+};
 
 export default function ReportDetailScreen() {
   const router = useRouter();
@@ -58,10 +97,56 @@ export default function ReportDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reportType, setReportType] = useState<ReportType>(initialType);
+  const [planType, setPlanType] = useState<PlanType>("free");
+  const [planLoading, setPlanLoading] = useState(true);
+  const { loading: detailsChecking } = useRequireProfileDetails();
 
   useEffect(() => {
     setReportType(initialType);
   }, [initialType, sessionId]);
+
+  useEffect(() => {
+    let active = true;
+    const loadPlan = async () => {
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) {
+          if (active) {
+            setPlanType("free");
+            setPlanLoading(false);
+          }
+          return;
+        }
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("plan_type")
+          .eq("id", user.id)
+          .maybeSingle<{ plan_type: string | null }>();
+        if (!active) return;
+        const planLabel =
+          (profile?.plan_type ??
+            (user.user_metadata?.plan_type as string | null) ??
+            "")?.toString().toLowerCase() ?? "";
+        setPlanType(planLabel === "pro" ? "pro" : "free");
+      } catch (err) {
+        console.warn("plan fetch error", err);
+        if (active) {
+          setPlanType("free");
+        }
+      } finally {
+        if (active) {
+          setPlanLoading(false);
+        }
+      }
+    };
+
+    loadPlan();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!sessionId) {
@@ -104,7 +189,7 @@ export default function ReportDetailScreen() {
     reportType === "personal_color" ? "퍼스널컬러" : reportType === "eye_wrinkle" ? "눈 주름" : "피부";
 
   const renderBody = () => {
-    if (loading) {
+    if (loading || detailsChecking) {
       return (
         <View style={styles.centerState}>
           <ActivityIndicator />
@@ -140,6 +225,13 @@ export default function ReportDetailScreen() {
         <Text style={styles.headline}>{report.highlight}</Text>
         <Text style={styles.summary}>{report.summary}</Text>
 
+        <AiReportSection
+          data={report.aiReport}
+          planType={planType}
+          loadingPlan={planLoading}
+          onUpgradePress={() => router.push("/mypage")}
+        />
+
         <ReportCard data={report} />
       </ScrollView>
     );
@@ -158,6 +250,159 @@ export default function ReportDetailScreen() {
     </SafeAreaView>
   );
 }
+
+const AiReportSection = ({
+  data,
+  planType,
+  loadingPlan,
+  onUpgradePress,
+}: {
+  data?: AiReportEnvelope | null;
+  planType: PlanType;
+  loadingPlan: boolean;
+  onUpgradePress: () => void;
+}) => {
+  if (!data) return null;
+
+  const renderNotice = (message: string) => (
+    <View style={styles.aiCard}>
+      <View style={styles.aiHeaderRow}>
+        <Text style={styles.aiHeaderTitle}>AI 상세 리포트</Text>
+        <View style={[styles.aiBadge, styles.aiBadgePreview]}>
+          <Text style={[styles.aiBadgeText, styles.aiBadgePreviewText]}>PREVIEW</Text>
+        </View>
+      </View>
+      <Text style={styles.aiNoticeText}>{message}</Text>
+    </View>
+  );
+
+  if (data.status === "unavailable") {
+    return renderNotice(data.error ?? "현재 AI 리포트를 준비 중입니다. 기본 리포트를 먼저 안내드릴게요.");
+  }
+  if (data.status === "error") {
+    return renderNotice(data.error ?? "AI 리포트를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+  }
+  if (!data.payload) {
+    return null;
+  }
+
+  const { payload } = data;
+  const previewOnly = planType !== "pro";
+  const summaryLines = previewOnly ? payload.summary.slice(0, 2) : payload.summary;
+
+  const badgeTextStyle = [
+    styles.aiBadgeText,
+    planType === "pro" ? null : styles.aiBadgePreviewText,
+  ];
+
+  return (
+    <View style={styles.aiCard}>
+      <View style={styles.aiHeaderRow}>
+        <Text style={styles.aiHeaderTitle}>AI 상세 리포트</Text>
+        <View style={[styles.aiBadge, planType === "pro" ? styles.aiBadgePro : styles.aiBadgePreview]}>
+          <Text style={badgeTextStyle}>{planType === "pro" ? "PRO" : "PREVIEW"}</Text>
+        </View>
+      </View>
+      <Text style={styles.aiOneLiner}>{payload.oneLiner || "AI가 리포트를 정리하고 있습니다."}</Text>
+      {summaryLines.map((line) => (
+        <Text key={line} style={styles.aiSummaryLine}>
+          • {line}
+        </Text>
+      ))}
+
+      <View style={styles.aiFocusBlock}>
+        <Text style={styles.aiFocusLabel}>이번 주 포커스</Text>
+        <Text style={styles.aiFocusTopic}>{FOCUS_LABELS[payload.focus.topic]}</Text>
+        <Text style={styles.aiFocusReason}>{payload.focus.reason}</Text>
+      </View>
+
+      {previewOnly ? (
+        <AiPreviewUpsell loading={loadingPlan} onUpgradePress={onUpgradePress} />
+      ) : (
+        <>
+          {payload.keyFindings.length > 0 && (
+            <View style={styles.aiKeyFindings}>
+              {payload.keyFindings.map((finding, index) => {
+                const colors = KEY_STATUS_COLORS[finding.status];
+                return (
+                  <View key={`${finding.title}-${index}`} style={styles.aiKeyRow}>
+                    <View style={styles.aiKeyRowHeader}>
+                      <Text style={styles.aiKeyTitle}>{finding.title}</Text>
+                      <View
+                        style={[
+                          styles.aiKeyBadge,
+                          { backgroundColor: colors.background },
+                        ]}
+                      >
+                        <Text style={[styles.aiKeyBadgeText, { color: colors.text }]}>
+                          {KEY_STATUS_LABELS[finding.status]}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.aiKeyDescription}>{finding.description}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+
+          {payload.ageComparison.statement ? (
+            <View style={styles.aiAgeBlock}>
+              <Text style={styles.aiAgePercentile}>{payload.ageComparison.percentile} %</Text>
+              <Text style={styles.aiAgeCaption}>{payload.ageComparison.statement}</Text>
+            </View>
+          ) : null}
+
+          {payload.actions.length > 0 && (
+            <View style={styles.aiActionList}>
+              <Text style={styles.aiActionTitle}>이번 주 액션</Text>
+              {payload.actions.map((action, index) => (
+                <View key={`${action.title}-${index}`} style={styles.aiActionRow}>
+                  <View style={styles.aiActionHeader}>
+                    <Text style={styles.aiActionName}>{action.title}</Text>
+                    <Text style={styles.aiActionFrequency}>{FREQUENCY_LABELS[action.frequency]}</Text>
+                  </View>
+                  <Text style={styles.aiActionDescription}>{action.description}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {payload.warnings.length > 0 && (
+            <View style={styles.aiWarningCard}>
+              <Text style={styles.aiWarningTitle}>주의할 점</Text>
+              {payload.warnings.map((warning, index) => (
+                <Text key={`${warning}-${index}`} style={styles.aiWarningText}>
+                  • {warning}
+                </Text>
+              ))}
+            </View>
+          )}
+        </>
+      )}
+    </View>
+  );
+};
+
+const AiPreviewUpsell = ({
+  loading,
+  onUpgradePress,
+}: {
+  loading: boolean;
+  onUpgradePress: () => void;
+}) => (
+  <View style={styles.aiUpsellCard}>
+    <Text style={styles.aiUpsellTitle}>AI 상세 리포트 전체 보기</Text>
+    <Text style={styles.aiUpsellDescription}>
+      PRO 구독 시 키 포인트, 나이 대비 비교, 맞춤 액션과 주의사항까지 모두 열어드려요.
+    </Text>
+    <Pressable style={styles.aiUpsellButton} onPress={onUpgradePress} disabled={loading}>
+      <Text style={styles.aiUpsellButtonText}>
+        {loading ? "확인 중..." : "구독하고 전체 보기"}
+      </Text>
+    </Pressable>
+  </View>
+);
 
 const ReportCard = ({ data }: { data: ReportDetailPayload }) => (
   <View style={styles.reportCard}>
@@ -393,6 +638,206 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 8,
     paddingHorizontal: 32,
+  },
+  aiCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 20,
+    marginTop: 20,
+    marginHorizontal: 16,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: "#F0ECF7",
+  },
+  aiHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  aiHeaderTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#1F1F24",
+  },
+  aiBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  aiBadgePro: {
+    backgroundColor: "#1F1F24",
+  },
+  aiBadgePreview: {
+    backgroundColor: "#EAE4F5",
+  },
+  aiBadgeText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#FFFFFF",
+  },
+  aiBadgePreviewText: {
+    color: "#5C3AA1",
+  },
+  aiNoticeText: {
+    fontSize: 14,
+    color: "#6F6F73",
+  },
+  aiOneLiner: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#1F1F24",
+    lineHeight: 22,
+  },
+  aiSummaryLine: {
+    fontSize: 14,
+    color: "#4E4E55",
+  },
+  aiFocusBlock: {
+    backgroundColor: "#F7F2FF",
+    borderRadius: 16,
+    padding: 14,
+    gap: 4,
+  },
+  aiFocusLabel: {
+    fontSize: 12,
+    color: "#8E7BB8",
+    fontWeight: "600",
+  },
+  aiFocusTopic: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#5D3EA8",
+  },
+  aiFocusReason: {
+    fontSize: 13,
+    color: "#4B3A63",
+  },
+  aiKeyFindings: {
+    gap: 12,
+  },
+  aiKeyRow: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#F1E8FF",
+    padding: 12,
+    gap: 4,
+  },
+  aiKeyRowHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  aiKeyTitle: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#1F1F24",
+    flex: 1,
+    marginRight: 10,
+  },
+  aiKeyBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  aiKeyBadgeText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  aiKeyDescription: {
+    fontSize: 13,
+    color: "#4B3A63",
+  },
+  aiAgeBlock: {
+    borderRadius: 16,
+    backgroundColor: "#F0F5FF",
+    padding: 14,
+    alignItems: "center",
+    gap: 4,
+  },
+  aiAgePercentile: {
+    fontSize: 28,
+    fontWeight: "700",
+    color: "#2D8B5C",
+  },
+  aiAgeCaption: {
+    fontSize: 13,
+    color: "#4E4E55",
+    textAlign: "center",
+  },
+  aiActionList: {
+    gap: 8,
+  },
+  aiActionTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#1F1F24",
+  },
+  aiActionRow: {
+    borderRadius: 14,
+    backgroundColor: "#F8F8FB",
+    padding: 14,
+    gap: 4,
+  },
+  aiActionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  aiActionName: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#1F1F24",
+  },
+  aiActionFrequency: {
+    fontSize: 12,
+    color: "#6F6F73",
+  },
+  aiActionDescription: {
+    fontSize: 13,
+    color: "#4B3A63",
+  },
+  aiWarningCard: {
+    borderRadius: 16,
+    backgroundColor: "#FFF5F3",
+    padding: 12,
+    gap: 4,
+  },
+  aiWarningTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#C0392B",
+  },
+  aiWarningText: {
+    fontSize: 13,
+    color: "#8C4F45",
+  },
+  aiUpsellCard: {
+    borderRadius: 16,
+    backgroundColor: "#F6F1FA",
+    padding: 16,
+    gap: 8,
+  },
+  aiUpsellTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#1F1F24",
+  },
+  aiUpsellDescription: {
+    fontSize: 13,
+    color: "#4B3A63",
+    lineHeight: 18,
+  },
+  aiUpsellButton: {
+    marginTop: 4,
+    borderRadius: 12,
+    backgroundColor: "#1F1F24",
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  aiUpsellButtonText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "600",
   },
   reportCard: {
     backgroundColor: "white",

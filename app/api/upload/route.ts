@@ -76,6 +76,14 @@ export async function POST(req: Request) {
       auth: { persistSession: false },
     });
 
+    const { data: sessionRow } = await supabase
+      .from("analysis_sessions")
+      .select("user_id")
+      .eq("id", sessionId)
+      .maybeSingle<{ user_id: string | null }>();
+
+    const derivedUserId = sessionRow?.user_id ?? null;
+
     /* 1️⃣ Storage 업로드 */
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from(STORAGE_BUCKET)
@@ -104,8 +112,9 @@ export async function POST(req: Request) {
     const { data: insertedRow, error: insertError } = await supabase
       .from("photos")
       .insert({
-        id: randomUUID(), // ✅ 반드시 필요
+        id: randomUUID(),
         session_id: sessionId,
+        user_id: derivedUserId,
         image_path: uploadData.path,
         image_url: publicUrl,
         source: "upload_api",
