@@ -2,6 +2,9 @@
 
 # dependencies
 /node_modules
+/apps/*/node_modules
+.next
+/apps/*/.next
 /.pnp
 .pnp.*
 .yarn/*
@@ -24,6 +27,9 @@
 .DS_Store
 *.pem
 /.expo
+/apps/mobile/.expo
+/apps/mobile/dist
+/apps/mobile/web-build
 
 # debug
 npm-debug.log*
@@ -40,3 +46,4 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+/apps/mobile/expo-env.d.ts

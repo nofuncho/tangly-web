@@ -1,33 +1,20 @@
-# tangly-web
+# Tangly Monorepo
 
-Tangly Web (Next.js) project
+웹(Next.js)과 모바일(Expo) 앱을 한 레포에서 관리하도록 폴더를 정리했습니다.
 
-## AI 상세 리포트 설정
+## 구조
+- `apps/web` : 기존 Next.js 웹앱 (API, 페이지, 크롤러 스크립트 포함)
+- `apps/mobile` : 기존 Expo 모바일 앱
 
-AI 상세 리포트를 사용하려면 아래 설정을 추가해야 합니다.
+## 주요 명령어 (루트에서 실행)
+- `npm run dev` : 웹앱 개발 서버 실행
+- `npm run build` / `npm run start` : 웹앱 빌드/서버 실행
+- `npm run lint` : 웹앱 린트
+- `npm run crawl:oliveyoung` : 웹앱 크롤러 스크립트 실행
+- `npm run dev:mobile` : 모바일 앱 실행 (`expo start`)
+- `npm run lint:mobile` : 모바일 앱 린트
 
-1. **환경변수 추가** (`.env.local`)
-   ```bash
-   OPENAI_API_KEY=<프로 모델 API 키>
-   # 선택: 기본값은 gpt-4.1-mini
-   OPENAI_MODEL=gpt-4.1-mini
-   # 선택: 자가 호스팅 프록시를 쓸 경우
-   # OPENAI_BASE_URL=https://your-proxy-endpoint/chat/completions
-   # 선택: 요청 타임아웃 (밀리초)
-   # AI_REPORT_TIMEOUT_MS=20000
-   ```
-2. **Supabase 테이블 생성**
-   ```sql
-   create table if not exists public.ai_reports (
-     session_id uuid primary key references analysis_sessions(id) on delete cascade,
-     provider text,
-     model text,
-     payload jsonb not null,
-     generated_at timestamptz default now()
-   );
-   ```
-3. **구독 플랜 컬럼 추가**
-   - `profiles` 테이블에 `plan_type text default 'free'` 컬럼을 추가합니다.
-   - PRO 사용자에 대해 `plan_type = 'pro'` 로 업데이트하면 앱에서 전체 AI 리포트를 노출합니다.
-
-환경 구성 후 Next.js dev 서버를 재시작하면 `/api/reports/[sessionId]` 호출 시 AI 리포트가 생성/캐싱되며, 앱에서는 Free/Pro 구분에 따라 노출됩니다.***
+## 설치
+각 앱 디렉터리에서 한 번씩 의존성을 설치해 주세요.
+- `npm install --prefix apps/web`
+- `npm install --prefix apps/mobile`
