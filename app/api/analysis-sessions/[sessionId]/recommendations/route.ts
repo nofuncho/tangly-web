@@ -6,13 +6,25 @@ import {
   type PhotoRow,
   type ProductRow,
 } from "@/lib/recommendations";
+import {
+  fetchProfileOxForUser,
+  mergeSessionAndProfileOx,
+  type ProfileOxRow,
+} from "@/lib/ox-storage";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+const resolveParams = async <T>(params: T | Promise<T>): Promise<T> => {
+  if (typeof (params as Promise<T>)?.then === "function") {
+    return params as Promise<T>;
+  }
+  return params as T;
+};
+
 export async function GET(
   req: Request,
-  { params }: { params: { sessionId?: string } }
+  context: { params: { sessionId?: string } | Promise<{ sessionId?: string }> }
 ) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return NextResponse.json(
@@ -21,8 +33,9 @@ export async function GET(
     );
   }
 
+  const resolvedParams = await resolveParams(context.params);
   const sessionId =
-    params.sessionId ?? extractSessionIdFromUrl(req.url ?? "");
+    resolvedParams.sessionId ?? extractSessionIdFromUrl(req.url ?? "");
   if (!sessionId) {
     return NextResponse.json({ error: "Session id is required" }, { status: 400 });
   }
@@ -34,7 +47,7 @@ export async function GET(
 
     const { data: session, error: sessionError } = await supabase
       .from("analysis_sessions")
-      .select("id")
+      .select("id, user_id")
       .eq("id", sessionId)
       .single();
 
@@ -55,10 +68,15 @@ export async function GET(
       );
     }
 
-    const { data: oxData, error: oxError } = await supabase
-      .from("ox_responses")
-      .select("question_key, answer, created_at")
-      .eq("session_id", sessionId);
+    const [{ data: oxData, error: oxError }, profileOxRows] = await Promise.all([
+      supabase
+        .from("ox_responses")
+        .select("question_key, answer, created_at")
+        .eq("session_id", sessionId),
+      session.user_id
+        ? fetchProfileOxForUser(supabase, session.user_id)
+        : Promise.resolve([] as ProfileOxRow[]),
+    ]);
 
     if (oxError) {
       console.error("ox fetch error", oxError);
@@ -77,10 +95,16 @@ export async function GET(
       return NextResponse.json({ error: productError.message }, { status: 500 });
     }
 
+    const mergedOxResponses = mergeSessionAndProfileOx(
+      (oxData ?? []) as OxResponseRow[],
+      profileOxRows,
+      { sessionId }
+    );
+
     const payload = buildRecommendationPayload({
       sessionId,
       photos: (photosData ?? []) as PhotoRow[],
-      oxResponses: (oxData ?? []) as OxResponseRow[],
+      oxResponses: mergedOxResponses,
       products: (productsData ?? []) as ProductRow[],
     });
 

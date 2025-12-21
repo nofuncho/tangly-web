@@ -56,7 +56,14 @@ export async function POST(req: Request) {
     }
 
     const shotType = shotTypeRaw.toLowerCase();
-    const validShotTypes = ["base", "cheek", "eye_open", "eye_closed"];
+    const validShotTypes = [
+      "base",
+      "cheek",
+      "eye_open",
+      "eye_closed",
+      "trouble_overview",
+      "trouble_detail",
+    ];
     if (!validShotTypes.includes(shotType)) {
       return NextResponse.json(
         { error: "Invalid shot_type" },

@@ -4,6 +4,13 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+const resolveParams = async <T>(params: T | Promise<T>): Promise<T> => {
+  if (typeof (params as Promise<T>)?.then === "function") {
+    return params as Promise<T>;
+  }
+  return params as T;
+};
+
 const ALLOWED_STATUSES = new Set([
   "capturing",
   "awaiting_ox",
@@ -15,7 +22,7 @@ const ALLOWED_STATUSES = new Set([
 
 export async function PATCH(
   req: Request,
-  { params }: { params: { sessionId?: string } }
+  context: { params: { sessionId?: string } | Promise<{ sessionId?: string }> }
 ) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return NextResponse.json(
@@ -25,8 +32,9 @@ export async function PATCH(
   }
 
   try {
+    const resolvedParams = await resolveParams(context.params);
     const body = await req.json().catch(() => null);
-    const sessionId = params.sessionId || body?.session_id;
+    const sessionId = resolvedParams.sessionId || body?.session_id;
     if (!sessionId || typeof sessionId !== "string") {
       return NextResponse.json({ error: "Session id is required" }, { status: 400 });
     }

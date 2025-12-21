@@ -10,6 +10,7 @@ export type PhotoRow = {
 
 export type OxResponseRow = {
   session_id?: string | null;
+  user_id?: string | null;
   question_key: string;
   answer: string;
   created_at?: string | null;
@@ -230,6 +231,25 @@ const deriveContext = (photos: PhotoRow[], oxResponses: OxResponseRow[]): Analys
     bumpNeed(needScores, "pore_care", 1, "피지 누적으로 모공이 넓어질 수 있어요.");
   } else {
     bumpNeed(needScores, "hydration", 0.5, "유분 걱정이 낮아 수분 레이어링에 집중할 수 있어요.");
+  }
+
+  if (oxMap["sleep_irregular"] === "O") {
+    bumpNeed(needScores, "elasticity", 1, "수면 부족은 탄력 회복을 더디게 만들어요.");
+    bumpNeed(needScores, "hydration", 0.5, "불규칙한 수면은 수분 순환에도 영향을 줍니다.");
+  }
+
+  if (oxMap["stress_high"] === "O") {
+    bumpNeed(needScores, "barrier", 1.5, "스트레스로 장벽이 불안정해질 수 있어요.");
+    bumpNeed(needScores, "soothing", 1, "예민함 대비 진정 루틴을 강화해야 해요.");
+  }
+
+  if (oxMap["water_intake_low"] === "O") {
+    bumpNeed(needScores, "hydration", 1.5, "체내 수분이 부족해 결이 거칠어질 수 있어요.");
+  }
+
+  if (oxMap["touch_face_often"] === "O") {
+    bumpNeed(needScores, "soothing", 0.5, "얼굴을 자주 만지면 미세 자극이 누적돼요.");
+    bumpNeed(needScores, "pore_care", 0.5, "손의 유분이 모공을 막을 수 있어요.");
   }
 
   return {

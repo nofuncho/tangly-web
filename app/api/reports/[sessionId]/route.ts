@@ -10,13 +10,25 @@ import {
 import { buildEyeWrinkleDetailPayload } from "@/lib/eye-wrinkle-report";
 import { ensureAiReport, type AiReportEnvelope } from "@/lib/ai-report";
 import { fetchProfileDetails } from "@/lib/profile-details";
+import {
+  fetchProfileOxForUser,
+  mergeSessionAndProfileOx,
+  type ProfileOxRow,
+} from "@/lib/ox-storage";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+const resolveParams = async <T>(params: T | Promise<T>): Promise<T> => {
+  if (typeof (params as Promise<T>)?.then === "function") {
+    return params as Promise<T>;
+  }
+  return params as T;
+};
+
 export async function GET(
   req: Request,
-  { params }: { params: { sessionId?: string } }
+  context: { params: { sessionId?: string } | Promise<{ sessionId?: string }> }
 ) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return NextResponse.json(
@@ -26,7 +38,9 @@ export async function GET(
   }
 
   const url = new URL(req.url ?? "http://localhost");
-  const sessionId = params?.sessionId ?? extractSessionIdFromUrl(req.url ?? "");
+  const resolvedParams = await resolveParams(context.params);
+  const sessionId =
+    resolvedParams?.sessionId ?? extractSessionIdFromUrl(req.url ?? "");
   if (!sessionId) {
     return NextResponse.json({ error: "Session id is required" }, { status: 400 });
   }
@@ -78,15 +92,25 @@ export async function GET(
       });
     }
 
-    const { data: oxData, error: oxError } = await supabase
-      .from("ox_responses")
-      .select("session_id, question_key, answer, created_at")
-      .eq("session_id", sessionId);
+    const [{ data: oxData, error: oxError }, profileOxRows] = await Promise.all([
+      supabase
+        .from("ox_responses")
+        .select("session_id, question_key, answer, created_at")
+        .eq("session_id", sessionId),
+      session.user_id
+        ? fetchProfileOxForUser(supabase, session.user_id)
+        : Promise.resolve([] as ProfileOxRow[]),
+    ]);
 
     if (oxError) {
       console.error("reports detail ox error", oxError);
       return NextResponse.json({ error: oxError.message }, { status: 500 });
     }
+    const mergedOxResponses = mergeSessionAndProfileOx(
+      (oxData ?? []) as OxResponseRow[],
+      profileOxRows,
+      { sessionId }
+    );
 
     const { data: productsData, error: productError } = await supabase
       .from("products")
@@ -101,7 +125,7 @@ export async function GET(
     const payload = buildRecommendationPayload({
       sessionId,
       photos: (photosData ?? []) as PhotoRow[],
-      oxResponses: (oxData ?? []) as OxResponseRow[],
+      oxResponses: mergedOxResponses,
       products: (productsData ?? []) as ProductRow[],
     });
 
@@ -114,7 +138,7 @@ export async function GET(
       sessionCreatedAt: session.created_at,
       payload,
       photos: (photosData ?? []) as PhotoRow[],
-      oxResponses: (oxData ?? []) as OxResponseRow[],
+      oxResponses: mergedOxResponses,
       profile,
     });
 

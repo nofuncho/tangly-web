@@ -81,6 +81,8 @@ type BuildAiReportParams = {
   profile?: ProfileDetails | null;
 };
 
+type ReferencedPhoto = PhotoRow & { reference: string };
+
 export const ensureAiReport = async ({
   supabase,
   sessionId,
@@ -186,6 +188,7 @@ const requestAiReport = async ({
   oxResponses,
   profile,
 }: AiRequestInput): Promise<AiRequestResult> => {
+  const referencedPhotos = attachPhotoReferences(photos);
   const body = {
     model: OPENAI_MODEL,
     response_format: { type: "json_object" },
@@ -197,17 +200,14 @@ const requestAiReport = async ({
           "의학적 진단이나 강압적 문장은 금지합니다. " +
           "모든 응답은 JSON으로 반환해야 하며, 지정한 스키마를 반드시 따르세요.",
       },
-      {
-        role: "user",
-        content: buildPromptPayload({
-          sessionId,
-          sessionCreatedAt,
-          report,
-          photos,
-          oxResponses,
-          profile,
-        }),
-      },
+      buildUserMessage({
+        sessionId,
+        sessionCreatedAt,
+        report,
+        photos: referencedPhotos,
+        oxResponses,
+        profile,
+      }),
     ],
   };
 
@@ -260,7 +260,7 @@ type PromptBuilderInput = {
   sessionId: string;
   sessionCreatedAt?: string | null;
   report: RecommendationPayload;
-  photos: PhotoRow[];
+  photos: ReferencedPhoto[];
   oxResponses: OxResponseRow[];
   profile?: ProfileDetails | null;
 };
@@ -273,6 +273,21 @@ const buildPromptPayload = ({
   oxResponses,
   profile,
 }: PromptBuilderInput) => {
+  const providedPhotos = photos.map((photo) => ({
+    reference: photo.reference,
+    shotType: photo.shot_type ?? null,
+    focus: photo.focus_area ?? null,
+    capturedAt: photo.created_at,
+    imageUrl: photo.image_url ?? null,
+    notes: photo.focus_area
+      ? `${photo.shot_type ?? "unknown"} focusing on ${photo.focus_area}`
+      : photo.shot_type ?? "unknown",
+  }));
+
+  const attachedPhotoReferences = providedPhotos
+    .filter((photo) => !!photo.imageUrl)
+    .map((photo) => photo.reference);
+
   const template = {
     instructions: {
       tone:
@@ -308,12 +323,12 @@ const buildPromptPayload = ({
       question: entry.question_key,
       answer: entry.answer,
     })),
-    photoShots: photos.map((photo) => ({
-      id: photo.id,
-      shotType: photo.shot_type,
-      focus: photo.focus_area,
-      capturedAt: photo.created_at,
-    })),
+    photoShots: providedPhotos,
+    imagesProvided: {
+      description:
+        "첨부된 이미지(reference)는 photoShots 배열과 동일한 순서이며, reference 값으로 각각을 구분하세요.",
+      referenceList: attachedPhotoReferences,
+    },
     profile: profile
       ? {
           gender: profile.gender,
@@ -326,7 +341,54 @@ const buildPromptPayload = ({
   return JSON.stringify(template, null, 2);
 };
 
-const sanitizeAiPayload = (raw: AiReportContent): AiReportContent => {
+const buildUserMessage = ({
+  sessionId,
+  sessionCreatedAt,
+  report,
+  photos,
+  oxResponses,
+  profile,
+}: PromptBuilderInput) => {
+  const promptText = buildPromptPayload({
+    sessionId,
+    sessionCreatedAt,
+    report,
+    photos,
+    oxResponses,
+    profile,
+  });
+  const attachments = buildVisionAttachments(photos);
+  if (attachments.length === 0) {
+    return {
+      role: "user",
+      content: promptText,
+    };
+  }
+  return {
+    role: "user",
+    content: [{ type: "text", text: promptText }, ...attachments],
+  };
+};
+
+const attachPhotoReferences = (photos: PhotoRow[]): ReferencedPhoto[] =>
+  photos.map((photo, index) => ({
+    ...photo,
+    reference: `PHOTO_${index + 1}`,
+  }));
+
+const buildVisionAttachments = (photos: ReferencedPhoto[]) => {
+  return photos
+    .filter((photo) => typeof photo.image_url === "string" && photo.image_url.trim().length > 0)
+    .map((photo) => ({
+      type: "image_url",
+      image_url: {
+        url: (photo.image_url as string).trim(),
+        detail: "high" as const,
+      },
+    }));
+};
+
+export const sanitizeAiPayload = (raw: AiReportContent): AiReportContent => {
   const summary = Array.isArray(raw?.summary)
     ? raw.summary.map((line) => `${line}`.trim()).filter(Boolean).slice(0, 5)
     : [];

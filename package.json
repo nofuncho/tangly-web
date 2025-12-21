@@ -6,11 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "crawl:oliveyoung": "node scripts/oliveyoung-crawler.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.87.0",
+    "dotenv": "^17.2.3",
     "next": "16.0.7",
+    "playwright": "^1.57.0",
     "react": "19.2.0",
     "react-dom": "19.2.0"
   },

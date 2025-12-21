@@ -8,6 +8,12 @@ import {
   type ProductRow,
 } from "@/lib/recommendations";
 import { buildEyeWrinkleArchiveEntry } from "@/lib/eye-wrinkle-report";
+import {
+  buildProfileOxMap,
+  fetchProfileOxRows,
+  mergeSessionAndProfileOx,
+  type ProfileOxRow,
+} from "@/lib/ox-storage";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -44,7 +50,7 @@ export async function GET(req: Request) {
 
     const { data: sessions, error: sessionError } = await supabase
       .from("analysis_sessions")
-      .select("id, created_at, source")
+      .select("id, created_at, source, user_id")
       .order("created_at", { ascending: false })
       .limit(limit);
 
@@ -54,13 +60,21 @@ export async function GET(req: Request) {
     }
 
     const sessionIds = (sessions ?? []).map((session) => session.id);
+    const userIds = Array.from(
+      new Set(
+        (sessions ?? [])
+          .map((session) => session.user_id)
+          .filter((value): value is string => typeof value === "string" && value.length > 0)
+      )
+    );
 
     let photosBySession = new Map<string, PhotoRow[]>();
     let oxBySession = new Map<string, OxResponseRow[]>();
+    let profileOxByUser = new Map<string, ProfileOxRow[]>();
     const products: ProductRow[] = [];
 
     if (sessionIds.length) {
-      const [{ data: photosData, error: photosError }, { data: oxData, error: oxError }, { data: productsData, error: productError }] =
+      const [{ data: photosData, error: photosError }, { data: oxData, error: oxError }, { data: productsData, error: productError }, profileRows] =
         await Promise.all([
           supabase
             .from("photos")
@@ -74,6 +88,7 @@ export async function GET(req: Request) {
             .from("products")
             .select("id, name, brand, category, key_ingredients, note, image_url")
             .limit(80),
+          fetchProfileOxRows(supabase, userIds),
         ]);
 
       if (photosError) {
@@ -91,6 +106,7 @@ export async function GET(req: Request) {
 
       photosBySession = groupBySession(photosData ?? []);
       oxBySession = groupOxBySession(oxData ?? []);
+      profileOxByUser = buildProfileOxMap(profileRows);
       products.push(...((productsData ?? []) as ProductRow[]));
     }
 
@@ -115,7 +131,14 @@ export async function GET(req: Request) {
           ];
         }
 
-        const sessionOx = oxBySession.get(session.id) ?? [];
+        const profileAnswers = session.user_id
+          ? profileOxByUser.get(session.user_id) ?? []
+          : [];
+        const sessionOx = mergeSessionAndProfileOx(
+          oxBySession.get(session.id) ?? [],
+          profileAnswers,
+          { sessionId: session.id }
+        );
         const payload = buildRecommendationPayload({
           sessionId: session.id,
           photos: sessionPhotos,

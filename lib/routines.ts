@@ -5,7 +5,6 @@ import {
   type NeedEntry,
   type OxResponseRow,
   type PhotoRow,
-  type ProductRecommendation,
   type ProductRow,
   type RecommendationPayload,
 } from "@/lib/recommendations";
@@ -17,6 +16,10 @@ import {
   concernToFriendlyLabel,
   type ProfileDetails,
 } from "@/lib/profile-details";
+import {
+  fetchProfileOxForUser,
+  mergeSessionAndProfileOx,
+} from "@/lib/ox-storage";
 
 type MonthlyRoutineRow = {
   id: string;
@@ -311,11 +314,11 @@ export const loadRecommendationContext = async (
 ): Promise<RecommendationContext> => {
   const { data: session, error: sessionError } = await supabase
     .from("analysis_sessions")
-    .select("id, created_at")
+    .select("id, created_at, user_id")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(1)
-    .maybeSingle<{ id: string; created_at: string | null }>();
+    .maybeSingle<{ id: string; created_at: string | null; user_id: string | null }>();
 
   if (sessionError || !session) {
     throw sessionError ?? new Error("세션 정보를 찾을 수 없습니다.");
@@ -341,10 +344,19 @@ export const loadRecommendationContext = async (
   if (oxError) throw oxError;
   if (productError) throw productError;
 
+  const profileOx = session.user_id
+    ? await fetchProfileOxForUser(supabase, session.user_id)
+    : [];
+  const mergedOx = mergeSessionAndProfileOx(
+    (ox ?? []) as OxResponseRow[],
+    profileOx,
+    { sessionId: session.id }
+  );
+
   const payload = buildRecommendationPayload({
     sessionId: session.id,
     photos: (photos ?? []) as PhotoRow[],
-    oxResponses: (ox ?? []) as OxResponseRow[],
+    oxResponses: mergedOx,
     products: (products ?? []) as ProductRow[],
   });
 
@@ -352,7 +364,7 @@ export const loadRecommendationContext = async (
     sessionId: session.id,
     payload,
     photos: (photos ?? []) as PhotoRow[],
-    ox: (ox ?? []) as OxResponseRow[],
+    ox: mergedOx,
   };
 };
 

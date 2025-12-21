@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  LayoutChangeEvent,
+  LayoutRectangle,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useRouter } from "expo-router";
@@ -7,6 +16,8 @@ import { useRouter } from "expo-router";
 import { SERVER_BASE_URL, UPLOAD_API_URL } from "@/lib/server";
 import { supabase } from "@/lib/supabase";
 import { useRequireProfileDetails } from "@/hooks/use-profile-details";
+import { optimizePhoto, type NormalizedCropRegion } from "@/lib/photo-utils";
+import type { AiReportContent } from "@/lib/ai-report";
 
 type FlowStage = "capture" | "analyzing" | "result";
 type SessionStatus = "capturing" | "analyzing" | "report_ready";
@@ -21,6 +32,18 @@ type StepConfig = {
 type StepState = {
   previewUri: string | null;
   uploaded: boolean;
+};
+
+type CameraLayout = {
+  width: number;
+  height: number;
+};
+
+type Rect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 type WrinkleMetric = {
@@ -78,6 +101,31 @@ const TIPS = [
 
 const createStepStates = () => STEP_CONFIGS.map(() => ({ previewUri: null, uploaded: false }));
 
+const CAMERA_ASPECT_RATIO = 4 / 3;
+const EYE_GUIDE_WIDTH = 220;
+const EYE_GUIDE_HEIGHT = 140;
+
+const computePreviewRect = (layout: CameraLayout, aspectRatio?: number): Rect => {
+  const targetRatio = aspectRatio && aspectRatio > 0 ? aspectRatio : CAMERA_ASPECT_RATIO;
+  const viewRatio = layout.width / layout.height;
+  if (viewRatio > targetRatio) {
+    const previewHeight = layout.height;
+    const previewWidth = previewHeight * targetRatio;
+    const offsetX = (layout.width - previewWidth) / 2;
+    return { x: offsetX, y: 0, width: previewWidth, height: previewHeight };
+  }
+  const previewWidth = layout.width;
+  const previewHeight = previewWidth / targetRatio;
+  const offsetY = (layout.height - previewHeight) / 2;
+  return { x: 0, y: offsetY, width: previewWidth, height: previewHeight };
+};
+
+const clamp = (value: number, min: number, max: number) => {
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+};
+
 export default function EyeWrinkleScreen() {
   const router = useRouter();
   const [permission, requestPermission] = useCameraPermissions();
@@ -88,12 +136,121 @@ export default function EyeWrinkleScreen() {
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [stepStates, setStepStates] = useState<StepState[]>(createStepStates());
   const [analyzingMessage, setAnalyzingMessage] = useState("눈가 주름 패턴을 분석하는 중입니다...");
+  const [aiReport, setAiReport] = useState<AiReportContent | null>(null);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [uploadingStep, setUploadingStep] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [completedSessionId, setCompletedSessionId] = useState<string | null>(null);
   const [authUserId, setAuthUserId] = useState<string | null>(null);
+  const [cameraLayout, setCameraLayout] = useState<CameraLayout | null>(null);
+  const [guideLayout, setGuideLayout] = useState<LayoutRectangle | null>(null);
+
+  const handleCameraLayout = useCallback((event: LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    setCameraLayout((prev) => {
+      if (prev && prev.width === width && prev.height === height) {
+        return prev;
+      }
+      return { width, height };
+    });
+  }, []);
+
+  const handleGuideLayout = useCallback((event: LayoutChangeEvent) => {
+    const layout = event.nativeEvent.layout;
+    setGuideLayout((prev) => {
+      if (
+        prev &&
+        prev.x === layout.x &&
+        prev.y === layout.y &&
+        prev.width === layout.width &&
+        prev.height === layout.height
+      ) {
+        return prev;
+      }
+      return layout;
+    });
+  }, []);
+
+  const computeNormalizedRegion = useCallback(
+    (photo?: { width?: number | null; height?: number | null }): NormalizedCropRegion | null => {
+      if (!cameraLayout || cameraLayout.width <= 0 || cameraLayout.height <= 0 || !guideLayout) {
+        return null;
+      }
+      const ratio =
+        photo?.width && photo?.height
+          ? Math.abs((photo.width as number) / (photo.height as number))
+          : CAMERA_ASPECT_RATIO;
+      const previewRect = computePreviewRect(cameraLayout, ratio);
+      if (previewRect.width <= 0 || previewRect.height <= 0) {
+        return null;
+      }
+
+      const left = Math.max(guideLayout.x, previewRect.x);
+      const top = Math.max(guideLayout.y, previewRect.y);
+      const right = Math.min(guideLayout.x + guideLayout.width, previewRect.x + previewRect.width);
+      const bottom = Math.min(guideLayout.y + guideLayout.height, previewRect.y + previewRect.height);
+      if (right <= left || bottom <= top) {
+        return null;
+      }
+
+      const xRatio = (left - previewRect.x) / previewRect.width;
+      const yRatio = (top - previewRect.y) / previewRect.height;
+      const widthRatio = (right - left) / previewRect.width;
+      const heightRatio = (bottom - top) / previewRect.height;
+
+      const normalizedX = clamp(xRatio, 0, 1);
+      const normalizedY = clamp(yRatio, 0, 1);
+      const normalizedWidth = clamp(widthRatio, 0, 1 - normalizedX);
+      const normalizedHeight = clamp(heightRatio, 0, 1 - normalizedY);
+
+      if (normalizedWidth <= 0 || normalizedHeight <= 0) {
+        return null;
+      }
+
+      return {
+        x: normalizedX,
+        y: normalizedY,
+        width: normalizedWidth,
+        height: normalizedHeight,
+      };
+    },
+    [cameraLayout, guideLayout]
+  );
+
+  const fetchReportResult = useCallback(async () => {
+    if (!sessionIdRef.current) {
+      setReportError("세션 정보를 찾지 못했습니다.");
+      return;
+    }
+    if (!SERVER_BASE_URL) {
+      setReportError("서버 주소가 설정되지 않았습니다.");
+      return;
+    }
+    setReportLoading(true);
+    setReportError(null);
+    try {
+      const response = await fetch(`${SERVER_BASE_URL}/api/eye-wrinkle-analysis/${sessionIdRef.current}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.error ?? "눈 주름 분석을 불러오지 못했습니다.");
+      }
+      const aiPayload: AiReportContent | null = payload?.payload ?? null;
+      setAiReport(aiPayload);
+      setAnalyzingMessage("눈가 분석이 완료되었습니다.");
+      setFlowStage("result");
+      await updateSessionStatus("report_ready");
+      setCompletedSessionId(sessionIdRef.current);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "AI 리포트를 불러오지 못했습니다.";
+      setReportError(message);
+      setAnalyzingMessage("리포트 연결에 실패했습니다. 다시 시도해 주세요.");
+    } finally {
+      setReportLoading(false);
+    }
+  }, [updateSessionStatus]);
 
   useEffect(() => {
     if (!permission?.granted) {
@@ -154,7 +311,7 @@ export default function EyeWrinkleScreen() {
     } finally {
       setCreatingSession(false);
     }
-  }, [resolveUserId, SERVER_BASE_URL]);
+  }, [resolveUserId]);
 
   useEffect(() => {
     prepareSession();
@@ -168,7 +325,7 @@ export default function EyeWrinkleScreen() {
     return !!sessionIdRef.current;
   };
 
-  const updateSessionStatus = async (status: SessionStatus) => {
+  const updateSessionStatus = useCallback(async (status: SessionStatus) => {
     if (!sessionIdRef.current || !SERVER_BASE_URL) return;
     try {
       await fetch(`${SERVER_BASE_URL}/api/analysis-sessions/${sessionIdRef.current}`, {
@@ -179,7 +336,7 @@ export default function EyeWrinkleScreen() {
     } catch (error) {
       console.warn("Failed to update session status", error);
     }
-  };
+  }, []);
 
   const uploadEyePhoto = async (uri: string, step: StepConfig) => {
     if (!UPLOAD_API_URL) {
@@ -218,6 +375,10 @@ export default function EyeWrinkleScreen() {
 
   const handleCapture = async () => {
     if (!cameraRef.current) return;
+    if (!cameraLayout || !guideLayout) {
+      setUploadError("가이드 영역을 불러오는 중입니다. 잠시 후 다시 시도해 주세요.");
+      return;
+    }
     if (!(await ensureSession())) {
       setUploadError("세션을 준비하지 못했습니다. 네트워크 상태를 확인해주세요.");
       return;
@@ -225,18 +386,24 @@ export default function EyeWrinkleScreen() {
     try {
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.9,
-        skipProcessing: true,
+        skipProcessing: false,
       });
+      const region = computeNormalizedRegion(photo);
+      if (!region) {
+        setUploadError("가이드 영역을 찾지 못했습니다. 다시 촬영해 주세요.");
+        return;
+      }
+      const processedPhoto = await optimizePhoto(photo, { crop: region });
       setStepStates((prev) => {
         const next = [...prev];
-        next[currentStepIndex] = { previewUri: photo.uri, uploaded: false };
+        next[currentStepIndex] = { previewUri: processedPhoto.uri, uploaded: false };
         return next;
       });
       setUploadingStep(currentStepIndex);
       setUploadError(null);
       let uploadSucceeded = false;
       try {
-        await uploadEyePhoto(photo.uri, STEP_CONFIGS[currentStepIndex]);
+        await uploadEyePhoto(processedPhoto.uri, STEP_CONFIGS[currentStepIndex]);
         uploadSucceeded = true;
         setStepStates((prev) => {
           const next = [...prev];
@@ -261,16 +428,9 @@ export default function EyeWrinkleScreen() {
 
   const beginAnalysis = () => {
     setFlowStage("analyzing");
-    updateSessionStatus("analyzing");
     setAnalyzingMessage("눈 주름을 정밀하게 비교하고 있어요...");
-    setTimeout(() => {
-      setAnalyzingMessage("부위별 탄성과 깊이를 정리하고 있어요...");
-    }, 1500);
-    setTimeout(() => {
-      setFlowStage("result");
-      updateSessionStatus("report_ready");
-      setCompletedSessionId(sessionIdRef.current);
-    }, 2800);
+    updateSessionStatus("analyzing");
+    fetchReportResult();
   };
 
   const handleReset = () => {
@@ -282,6 +442,9 @@ export default function EyeWrinkleScreen() {
      setCompletedSessionId(null);
      sessionIdRef.current = null;
      prepareSession();
+    setAiReport(null);
+    setReportError(null);
+    setReportLoading(false);
   };
 
   const currentStep = STEP_CONFIGS[currentStepIndex];
@@ -295,6 +458,36 @@ export default function EyeWrinkleScreen() {
   const isUploading = uploadingStep !== null;
   const disablePrevButton = isFirstStep || isUploading || creatingSession;
   const captureDisabled = !permission?.granted || isUploading || creatingSession;
+  const aiContent = aiReport;
+  const aiSummaryLines = aiContent?.summary?.filter((line) => !!line?.trim()) ?? [];
+  const aiFindings = aiContent?.keyFindings ?? [];
+  const aiActions = aiContent?.actions ?? [];
+  const aiWarnings = aiContent?.warnings ?? [];
+  const hasAi = !!aiContent;
+
+  const translateStatus = (status?: string | null) => {
+    switch ((status ?? "").toLowerCase()) {
+      case "good":
+        return { label: "양호", style: styles.metricStatusGood };
+      case "caution":
+        return { label: "주의", style: styles.metricStatusWarning };
+      default:
+        return { label: "보통", style: styles.metricStatusNeutral };
+    }
+  };
+
+  const formatFrequency = (frequency?: string | null) => {
+    switch ((frequency ?? "").toLowerCase()) {
+      case "daily":
+        return "매일 권장";
+      case "weekly":
+        return "주 1회 권장";
+      case "three_per_week":
+        return "주 3회 권장";
+      default:
+        return "권장 주기 자유";
+    }
+  };
 
   const handleOpenReport = () => {
     if (!completedSessionId) return;
@@ -334,9 +527,15 @@ export default function EyeWrinkleScreen() {
             <Text style={styles.stepDescription}>{currentStep.description}</Text>
           </View>
 
-          <View style={styles.cameraWrapper}>
+          <View style={styles.cameraWrapper} onLayout={handleCameraLayout}>
             {permission?.granted ? (
-              <CameraView style={StyleSheet.absoluteFill} ref={cameraRef} facing="front" />
+              <>
+                <CameraView style={StyleSheet.absoluteFill} ref={cameraRef} facing="front" />
+                <View pointerEvents="none" style={styles.eyeGuide}>
+                  <View style={styles.eyeGuideCircle} onLayout={handleGuideLayout} />
+                  <Text style={styles.eyeGuideLabel}>{currentStep.guidance}</Text>
+                </View>
+              </>
             ) : (
               <View style={styles.cameraPermissionBlock}>
                 <Text style={styles.permissionText}>카메라 권한을 허용해 주세요.</Text>
@@ -345,10 +544,6 @@ export default function EyeWrinkleScreen() {
                 </Pressable>
               </View>
             )}
-            <View style={styles.eyeGuide}>
-              <View style={styles.eyeGuideCircle} />
-              <Text style={styles.eyeGuideLabel}>{currentStep.guidance}</Text>
-            </View>
           </View>
 
           <View style={styles.buttonRow}>
@@ -377,6 +572,14 @@ export default function EyeWrinkleScreen() {
         <View style={styles.analyzingSection}>
           <ActivityIndicator size="large" color="#A884CC" />
           <Text style={styles.analyzingText}>{analyzingMessage}</Text>
+          {reportError && (
+            <>
+              <Text style={styles.errorText}>{reportError}</Text>
+              <Pressable style={[styles.secondaryButton, { marginTop: 12 }]} onPress={fetchReportResult} disabled={reportLoading}>
+                <Text style={styles.secondaryButtonText}>다시 시도하기</Text>
+              </Pressable>
+            </>
+          )}
         </View>
       )}
 
@@ -384,27 +587,85 @@ export default function EyeWrinkleScreen() {
         <ScrollView contentContainerStyle={styles.resultContent} showsVerticalScrollIndicator={false}>
           <Text style={styles.resultTitle}>눈가 주름 리포트</Text>
           <View style={styles.metricRow}>
-            {WRINKLE_METRICS.map((metric) => (
-              <View key={metric.id} style={styles.metricCard}>
-                <View style={styles.metricHeader}>
-                  <Text style={styles.metricLabel}>{metric.label}</Text>
-                  <Text style={metric.status === "주의" ? styles.metricStatusWarning : styles.metricStatusGood}>
-                    {metric.status}
-                  </Text>
-                </View>
-                <Text style={styles.metricScore}>{metric.score}점</Text>
-                <Text style={styles.metricDetail}>{metric.detail}</Text>
-              </View>
-            ))}
-          </View>
-          <View style={styles.tipCard}>
-            <Text style={styles.tipTitle}>케어 제안</Text>
-            {TIPS.map((tip) => (
-              <Text key={tip} style={styles.tipItem}>
-                • {tip}
+            <View style={styles.summaryCard}>
+              <Text style={styles.summaryEyebrow}>AI 한 줄 요약</Text>
+              <Text style={styles.summaryHeadline}>
+                {aiContent?.oneLiner ?? "촬영한 눈 사진을 기반으로 주름과 탄력을 정리했어요."}
               </Text>
-            ))}
+              {aiSummaryLines.map((line, index) => (
+                <Text key={`${line}-${index}`} style={styles.summaryText}>
+                  • {line}
+                </Text>
+              ))}
+            </View>
           </View>
+          {hasAi ? (
+            <>
+              {aiFindings.length > 0 && (
+                <View style={styles.metricRow}>
+                  {aiFindings.map((finding, index) => {
+                    const { label, style } = translateStatus(finding.status);
+                    return (
+                      <View key={`${finding.title}-${index}`} style={styles.metricCard}>
+                        <View style={styles.metricHeader}>
+                          <Text style={styles.metricLabel}>{finding.title}</Text>
+                          <Text style={[styles.metricStatusGood, style]}>{label}</Text>
+                        </View>
+                        <Text style={styles.metricDetail}>{finding.description}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+              {aiActions.length > 0 && (
+                <View style={styles.tipCard}>
+                  <Text style={styles.tipTitle}>관리법 제안</Text>
+                  {aiActions.map((action, index) => (
+                    <View key={`${action.title}-${index}`} style={styles.actionBlock}>
+                      <Text style={styles.actionTitle}>{action.title}</Text>
+                      <Text style={styles.actionDescription}>{action.description}</Text>
+                      <Text style={styles.actionMeta}>{formatFrequency(action.frequency)}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+              {aiWarnings.length > 0 && (
+                <View style={styles.tipCard}>
+                  <Text style={styles.tipTitle}>주의 안내</Text>
+                  {aiWarnings.map((warning) => (
+                    <Text key={warning} style={styles.tipItem}>
+                      • {warning}
+                    </Text>
+                  ))}
+                </View>
+              )}
+            </>
+          ) : (
+            <>
+              <View style={styles.metricRow}>
+                {WRINKLE_METRICS.map((metric) => (
+                  <View key={metric.id} style={styles.metricCard}>
+                    <View style={styles.metricHeader}>
+                      <Text style={styles.metricLabel}>{metric.label}</Text>
+                      <Text style={metric.status === "주의" ? styles.metricStatusWarning : styles.metricStatusGood}>
+                        {metric.status}
+                      </Text>
+                    </View>
+                    <Text style={styles.metricScore}>{metric.score}점</Text>
+                    <Text style={styles.metricDetail}>{metric.detail}</Text>
+                  </View>
+                ))}
+              </View>
+              <View style={styles.tipCard}>
+                <Text style={styles.tipTitle}>케어 제안</Text>
+                {TIPS.map((tip) => (
+                  <Text key={tip} style={styles.tipItem}>
+                    • {tip}
+                  </Text>
+                ))}
+              </View>
+            </>
+          )}
           {completedSessionId && (
             <Pressable style={styles.primaryFullButton} onPress={handleOpenReport}>
               <Text style={styles.primaryButtonText}>리포트에서 보기</Text>
@@ -516,11 +777,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
   },
   eyeGuideCircle: {
-    width: "100%",
-    height: 110,
+    width: EYE_GUIDE_WIDTH,
+    height: EYE_GUIDE_HEIGHT,
     borderWidth: 2,
     borderColor: "rgba(255,255,255,0.7)",
-    borderRadius: 80,
+    borderRadius: EYE_GUIDE_HEIGHT / 2,
     marginBottom: 12,
   },
   eyeGuideLabel: {
@@ -599,6 +860,28 @@ const styles = StyleSheet.create({
   metricRow: {
     gap: 12,
   },
+  summaryCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#EFE7FB",
+    padding: 18,
+    gap: 4,
+    backgroundColor: "#FCFAFF",
+  },
+  summaryEyebrow: {
+    fontSize: 13,
+    color: "#A884CC",
+    fontWeight: "600",
+  },
+  summaryHeadline: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#1F1F24",
+  },
+  summaryText: {
+    fontSize: 13,
+    color: "#4A4A55",
+  },
   metricCard: {
     borderRadius: 18,
     borderWidth: 1,
@@ -622,6 +905,10 @@ const styles = StyleSheet.create({
   metricStatusWarning: {
     fontSize: 13,
     color: "#D93A5E",
+  },
+  metricStatusNeutral: {
+    fontSize: 13,
+    color: "#8F8F99",
   },
   metricScore: {
     fontSize: 26,
@@ -649,6 +936,29 @@ const styles = StyleSheet.create({
   tipItem: {
     fontSize: 14,
     color: "#4A4A55",
+  },
+  actionBlock: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E6DDF4",
+    padding: 14,
+    marginTop: 8,
+    gap: 4,
+  },
+  actionTitle: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#1F1F24",
+  },
+  actionDescription: {
+    fontSize: 13,
+    color: "#4A4A55",
+    lineHeight: 18,
+  },
+  actionMeta: {
+    fontSize: 12,
+    color: "#6F6F73",
   },
   errorText: {
     marginTop: 10,

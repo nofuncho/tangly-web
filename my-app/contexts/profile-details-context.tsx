@@ -62,19 +62,24 @@ export const ProfileDetailsProvider = ({ children }: { children: React.ReactNode
 
   useEffect(() => {
     let mounted = true;
-    refresh();
+    const kickoff = setTimeout(() => {
+      if (mounted) {
+        void refresh();
+      }
+    }, 0);
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!mounted) return;
       if (session) {
-        refresh();
+        void refresh();
       } else {
         setState({ loading: false, userId: null, details: null, completed: false });
       }
     });
     return () => {
       mounted = false;
+      clearTimeout(kickoff);
       subscription.unsubscribe();
     };
   }, [refresh]);

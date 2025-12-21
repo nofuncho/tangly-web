@@ -2,21 +2,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
+  LayoutChangeEvent,
+  LayoutRectangle,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
-  Platform,
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { SERVER_BASE_URL, UPLOAD_API_URL } from "@/lib/server";
 import { supabase } from "@/lib/supabase";
-import { optimizePhoto } from "@/lib/photo-utils";
+import { optimizePhoto, type NormalizedCropRegion } from "@/lib/photo-utils";
+import type { AiReportContent } from "@/lib/ai-report";
+import type { OxAnswer } from "@/lib/ox-questions";
 import { useRequireProfileDetails } from "@/hooks/use-profile-details";
 
-type FlowStage = "intro" | "capture" | "ox" | "analyzing" | "report";
+type FlowStage = "intro" | "capture" | "analyzing" | "report";
 type CaptureState = "idle" | "uploading" | "completed" | "error";
 type SessionStatus =
   | "capturing"
@@ -45,14 +49,47 @@ type StepState = {
   quality: QualityResult | null;
 };
 
+type FocusOverlay = "base" | "cheek";
+
+type CameraLayout = {
+  width: number;
+  height: number;
+};
+
+type Rect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+const CAMERA_ASPECT_RATIO = 4 / 3; // width / height
+
+const computePreviewRect = (layout: CameraLayout, aspectRatio: number): Rect => {
+  const safeAspect = aspectRatio > 0 ? aspectRatio : CAMERA_ASPECT_RATIO;
+  const viewRatio = layout.width / layout.height;
+  if (viewRatio > safeAspect) {
+    // view is wider; height limits preview
+    const previewHeight = layout.height;
+    const previewWidth = previewHeight * safeAspect;
+    const offsetX = (layout.width - previewWidth) / 2;
+    return { x: offsetX, y: 0, width: previewWidth, height: previewHeight };
+  }
+  // view is taller; width limits preview
+  const previewWidth = layout.width;
+  const previewHeight = previewWidth / safeAspect;
+  const offsetY = (layout.height - previewHeight) / 2;
+  return { x: 0, y: offsetY, width: previewWidth, height: previewHeight };
+};
+
 type StepConfig = {
-  id: "base" | "cheek";
+  id: "cheek_primary" | "cheek_detail";
   title: string;
   description: string;
-  shotType: "base" | "cheek";
-  focusArea: "cheek" | null;
-  overlay: "base" | "cheek";
-  highlightColor: string;
+  guidance: string;
+  shotType: "cheek";
+  focusArea: "cheek";
+  overlay: FocusOverlay;
 };
 
 type AnalysisStepState = {
@@ -76,6 +113,14 @@ type NeedFocus = {
   description: string;
 };
 
+const SKIN_SECTION_LABELS: Record<string, string> = {
+  hydration: "수분 밀도",
+  elasticity: "탄력",
+  barrier: "장벽",
+  tone: "톤 균형",
+  pore: "모공 관리",
+};
+
 type ProductRecommendationInfo = {
   id: string;
   name: string;
@@ -96,34 +141,27 @@ type ReportData = {
   tips: string[];
   needs: NeedFocus[];
   recommendations: ProductRecommendationInfo[];
-};
-
-type OXAnswer = "O" | "X" | null;
-
-type OXQuestion = {
-  key: string;
-  title: string;
-  description: string;
+  aiReport?: AiReportContent | null;
 };
 
 const STEP_CONFIGS: StepConfig[] = [
   {
-    id: "base",
-    title: "STEP 1 · 기준 얼굴",
-    description: "얼굴 전체가 가이드 안에 들어오도록 정면을 맞춰주세요.",
-    shotType: "base",
-    focusArea: null,
-    overlay: "base",
-    highlightColor: "#A884CC",
-  },
-  {
-    id: "cheek",
-    title: "STEP 2 · 볼 클로즈업",
-    description: "볼을 가까이 촬영해 피부 결이 선명하게 보이도록 맞춰주세요.",
+    id: "cheek_primary",
+    title: "STEP 1 · 볼 기준 촬영",
+    description: "정면을 바라보고 볼 전체가 가이드 안에 들어오도록 촬영해 주세요.",
+    guidance: "코 옆부터 턱선까지 부드럽게 채워 주세요.",
     shotType: "cheek",
     focusArea: "cheek",
     overlay: "cheek",
-    highlightColor: "#F08DC2",
+  },
+  {
+    id: "cheek_detail",
+    title: "STEP 2 · 볼 디테일 촬영",
+    description: "첫 촬영보다 조금 더 가까이 다가가 피부 결을 선명하게 담아주세요.",
+    guidance: "볼 중심을 프레임에 가득 채우면 정밀 분석이 쉬워요.",
+    shotType: "cheek",
+    focusArea: "cheek",
+    overlay: "cheek",
   },
 ];
 
@@ -134,34 +172,6 @@ const ANALYSIS_SEQUENCE = [
   { id: "tone", label: "톤 균형 측정 중" },
 ];
 
-const OX_QUESTIONS: OXQuestion[] = [
-  {
-    key: "tight_after_wash",
-    title: "세안 후 당김이 느껴지나요?",
-    description: "O: 자주 느껴진다 / X: 거의 없다",
-  },
-  {
-    key: "makeup_cakey",
-    title: "화장이 자주 들뜨거나 갈라지나요?",
-    description: "O: 자주 그렇다 / X: 거의 없다",
-  },
-  {
-    key: "elasticity_change",
-    title: "탄력이 예전 같지 않다고 느끼나요?",
-    description: "O: 예전보다 떨어진 것 같다 / X: 큰 변화 없다",
-  },
-  {
-    key: "skin_sensitive_now",
-    title: "피부가 요즘 예민해졌다고 느끼나요?",
-    description: "O: 예민해졌다 / X: 평소와 비슷하다",
-  },
-  {
-    key: "no_recent_trouble",
-    title: "특별한 트러블은 없나요?",
-    description: "O: 크게 없다 / X: 가끔 생긴다",
-  },
-];
-
 const createInitialStepState = (): StepState => ({
   status: "idle",
   previewUri: null,
@@ -169,13 +179,6 @@ const createInitialStepState = (): StepState => ({
   message: "촬영을 시작해주세요.",
   quality: null,
 });
-
-const createInitialOxAnswers = (): Record<string, OXAnswer> => (
-  OX_QUESTIONS.reduce((acc, question) => {
-    acc[question.key] = null;
-    return acc;
-  }, {} as Record<string, OXAnswer>)
-);
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -200,29 +203,26 @@ export default function StepBasedCaptureScreen() {
     STEP_CONFIGS.map(() => createInitialStepState())
   );
   const [globalMessage, setGlobalMessage] = useState(
-    "AI 피부 분석을 위한 표준 촬영을 시작해 주세요."
+    "볼 집중 스캔을 위해 첫 번째 촬영부터 시작해 주세요."
   );
   const [analysisSteps, setAnalysisSteps] = useState<AnalysisStepState[]>(
     ANALYSIS_SEQUENCE.map((step) => ({ ...step, status: "pending" }))
   );
   const [reportData, setReportData] = useState<ReportData | null>(null);
-  const [oxAnswers, setOxAnswers] = useState<Record<string, OXAnswer>>(createInitialOxAnswers());
-  const [oxSubmitting, setOxSubmitting] = useState(false);
-  const [oxError, setOxError] = useState<string | null>(null);
-  const [oxCompleted, setOxCompleted] = useState(false);
+  const [cameraLayout, setCameraLayout] = useState<CameraLayout | null>(null);
+  const [focusLayouts, setFocusLayouts] = useState<Record<FocusOverlay, LayoutRectangle | null>>({
+    base: null,
+    cheek: null,
+  });
 
   const analysisTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const stepStatesRef = useRef(stepStates);
-  const oxAnswersRef = useRef(oxAnswers);
   const sessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     stepStatesRef.current = stepStates;
   }, [stepStates]);
 
-  useEffect(() => {
-    oxAnswersRef.current = oxAnswers;
-  }, [oxAnswers]);
 
   useEffect(() => {
     return () => {
@@ -252,12 +252,92 @@ export default function StepBasedCaptureScreen() {
     [stepStates]
   );
 
-  const allOxAnswered = useMemo(
-    () => Object.values(oxAnswers).every((value) => value === "O" || value === "X"),
-    [oxAnswers]
-  );
 
   const [authUserId, setAuthUserId] = useState<string | null>(null);
+
+  const handleCameraLayout = useCallback((event: LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    setCameraLayout((prev) => {
+      if (prev && prev.width === width && prev.height === height) {
+        return prev;
+      }
+      return { width, height };
+    });
+  }, []);
+
+  const handleGuideRegionMeasured = useCallback(
+    (overlay: FocusOverlay, layout: LayoutRectangle) => {
+      setFocusLayouts((prev) => {
+        const current = prev[overlay];
+        if (
+          current &&
+          current.x === layout.x &&
+          current.y === layout.y &&
+          current.width === layout.width &&
+          current.height === layout.height
+        ) {
+          return prev;
+        }
+        return { ...prev, [overlay]: layout };
+      });
+    },
+    []
+  );
+
+  const computeNormalizedRegion = useCallback(
+    (
+      overlay: FocusOverlay,
+      photoSize?: { width?: number | null; height?: number | null }
+    ): NormalizedCropRegion | null => {
+      if (!cameraLayout || cameraLayout.width <= 0 || cameraLayout.height <= 0) {
+        return null;
+      }
+      const region = focusLayouts[overlay];
+      if (!region) {
+        return null;
+      }
+      const aspectRatio =
+        photoSize?.width && photoSize.height
+          ? Math.abs((photoSize.width as number) / (photoSize.height as number))
+          : CAMERA_ASPECT_RATIO;
+      const previewRect = computePreviewRect(cameraLayout, aspectRatio);
+      if (previewRect.width <= 0 || previewRect.height <= 0) {
+        return null;
+      }
+
+      const left = Math.max(region.x, previewRect.x);
+      const top = Math.max(region.y, previewRect.y);
+      const right = Math.min(region.x + region.width, previewRect.x + previewRect.width);
+      const bottom = Math.min(region.y + region.height, previewRect.y + previewRect.height);
+      if (right <= left || bottom <= top) {
+        return null;
+      }
+
+      const widthRatio = (right - left) / previewRect.width;
+      const heightRatio = (bottom - top) / previewRect.height;
+      const xRatio = (left - previewRect.x) / previewRect.width;
+      const yRatio = (top - previewRect.y) / previewRect.height;
+
+      const normalizedX = Math.min(Math.max(xRatio, 0), 1);
+      const normalizedY = Math.min(Math.max(yRatio, 0), 1);
+      const maxWidth = 1 - normalizedX;
+      const maxHeight = 1 - normalizedY;
+      const normalizedWidth = Math.min(Math.max(widthRatio, 0), maxWidth);
+      const normalizedHeight = Math.min(Math.max(heightRatio, 0), maxHeight);
+
+      if (normalizedWidth <= 0 || normalizedHeight <= 0) {
+        return null;
+      }
+
+      return {
+        x: normalizedX,
+        y: normalizedY,
+        width: normalizedWidth,
+        height: normalizedHeight,
+      };
+    },
+    [cameraLayout, focusLayouts]
+  );
 
   useEffect(() => {
     let active = true;
@@ -334,13 +414,12 @@ export default function StepBasedCaptureScreen() {
     }
   }, []);
 
-  const refreshServerReport = useCallback(
-    async (options?: { loadingMessage?: string; doneMessage?: string }) => {
+const refreshServerReport = useCallback(
+  async (options?: { loadingMessage?: string; doneMessage?: string }) => {
       const fallbackToLocalReport = () => {
-        const fallback = buildReportFromQuality(
-          stepStatesRef.current,
-          sessionIdRef.current,
-          oxAnswersRef.current
+      const fallback = buildReportFromQuality(
+        stepStatesRef.current,
+        sessionIdRef.current
       );
       setReportData(fallback);
       setGlobalMessage("기본 리포트를 표시합니다.");
@@ -362,24 +441,38 @@ export default function StepBasedCaptureScreen() {
         options?.loadingMessage ?? "리포트를 정리하는 중입니다..."
       );
       const response = await fetch(
-        `${SERVER_BASE_URL}/api/analysis-sessions/${sessionIdRef.current}/recommendations`
+        `${SERVER_BASE_URL}/api/reports/${sessionIdRef.current}`
       );
       const payload = await response.json();
       if (!response.ok) {
         throw new Error(payload?.error || "리포트 생성에 실패했습니다.");
       }
 
+      const aiPayload: AiReportContent | null =
+        payload?.aiReport?.payload ?? payload?.aiReport ?? null;
+      const summaryText =
+        payload.summary ??
+        (Array.isArray(aiPayload?.summary)
+          ? aiPayload?.summary?.join("\n")
+          : "");
+      const highlightText =
+        payload.highlight ??
+        aiPayload?.oneLiner ??
+        aiPayload?.focus?.reason ??
+        "";
+
       setReportData({
         sessionLabel:
           payload.sessionLabel ?? payload.sessionId ?? sessionIdRef.current,
-        summary: payload.summary ?? "",
-        highlight: payload.highlight ?? "",
+        summary: summaryText ?? "",
+        highlight: highlightText ?? "",
         items: Array.isArray(payload.items) ? payload.items : [],
         tips: Array.isArray(payload.tips) ? payload.tips : [],
         needs: Array.isArray(payload.needs) ? payload.needs : [],
         recommendations: Array.isArray(payload.recommendations)
           ? payload.recommendations
           : [],
+        aiReport: aiPayload,
       });
       setGlobalMessage(
         options?.doneMessage ?? "1차 리포트가 준비되었습니다."
@@ -390,24 +483,38 @@ export default function StepBasedCaptureScreen() {
     } finally {
       setFlowStage("report");
     }
-    },
-    []
-  );
+  },
+  []
+);
 
-  const openOxStage = () => {
-    if (!sessionIdRef.current) {
-      setGlobalMessage("세션 정보가 없어 다시 시작해야 합니다.");
+  const fetchSkinAnalysis = useCallback(async () => {
+    if (!sessionIdRef.current || !SERVER_BASE_URL) {
+      await refreshServerReport({
+        loadingMessage: "기본 리포트를 불러오는 중입니다...",
+      });
       return;
     }
-    setFlowStage("ox");
-    setGlobalMessage("생활 습관 정보를 입력하면 리포트가 더 정교해집니다.");
-    updateSessionStatus("awaiting_ox");
-  };
+    try {
+      setGlobalMessage("AI가 촬영 이미지를 해석하는 중입니다...");
+      const response = await fetch(
+        `${SERVER_BASE_URL}/api/skin-analysis/${sessionIdRef.current}`
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.error || "AI 분석에 실패했습니다.");
+      }
+    } catch (error) {
+      console.warn("Skin analysis error", error);
+      setGlobalMessage("AI 분석에 실패했습니다. 기본 리포트를 준비할게요.");
+    } finally {
+      await refreshServerReport({
+        loadingMessage: "리포트를 정리하는 중입니다...",
+        doneMessage: "AI 리포트가 준비되었습니다.",
+      });
+      updateSessionStatus("report_ready");
+    }
+  }, [refreshServerReport, updateSessionStatus]);
 
-  const returnToReport = () => {
-    setFlowStage("report");
-    setGlobalMessage("리포트에서 분석 결과를 확인하세요.");
-  };
 
   const startSession = async () => {
     const granted = await ensurePermission();
@@ -434,11 +541,7 @@ export default function StepBasedCaptureScreen() {
           status: index === 0 ? "active" : "pending",
         }))
       );
-      setOxAnswers(createInitialOxAnswers());
-      setOxSubmitting(false);
-      setOxError(null);
-      setOxCompleted(false);
-      setGlobalMessage("가이드에 맞춰 기준 촬영부터 진행해주세요.");
+      setGlobalMessage("가이드에 맞춰 첫 번째 촬영부터 진행해주세요.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "세션 생성 실패";
       setGlobalMessage(message);
@@ -469,30 +572,27 @@ export default function StepBasedCaptureScreen() {
     const ratio = width > 0 ? height / width : 0;
     const onAndroid = Platform.OS === "android";
 
-    if (step.shotType === "base") {
-      const minArea = onAndroid ? 6e5 : 1e6;
-      const minRatio = onAndroid ? 0.7 : 0.85;
-      const maxRatio = onAndroid ? 1.65 : 1.45;
+    if (step.id === "cheek_primary") {
+      const minArea = onAndroid ? 4.5e5 : 7.5e5;
+      const minRatio = onAndroid ? 0.65 : 0.75;
+      const maxRatio = onAndroid ? 1.4 : 1.3;
       let passed = area >= minArea && ratio > minRatio && ratio < maxRatio;
 
       if (!passed && onAndroid && width >= 720 && height >= 960) {
-        // 일부 안드로이드 기기에서 해상도는 충분하지만 비율이 조금 어긋나는 이슈가 있어 완화
         passed = true;
       }
       return {
         passed,
-        headline: passed ? "분석에 적합한 기준 촬영입니다." : "얼굴이 충분히 채워지지 않았어요.",
+        headline: passed ? "첫 번째 볼 촬영이 통과했어요." : "볼이 충분히 채워지지 않았어요.",
         detail: passed
-          ? "얼굴 윤곽이 안정적으로 포착되었습니다."
-          : onAndroid
-            ? "카메라와 얼굴 사이 거리를 조금만 줄여 가이드 원을 채워주세요."
-            : "가이드 원 안에 이마와 턱이 모두 들어오도록 한 걸음만 더 다가와 촬영해주세요.",
-        tip: "카메라와 눈높이를 맞추고 어깨가 살짝 보이도록 정면을 유지하면 통과 확률이 높아집니다.",
+          ? "볼 라인과 턱선이 고르게 담겼습니다."
+          : "정면을 유지한 상태에서 가이드 원을 넉넉히 채워주세요.",
+        tip: "코 옆선을 가이드 중심에 맞추고 고개를 살짝만 돌리면 촬영이 안정적이에요.",
         metrics: { area, ratio },
       };
     }
 
-    const cheekMinArea = onAndroid ? 5e5 : 8.5e5;
+    const cheekMinArea = onAndroid ? 6e5 : 1e6;
     const cheekMinRatio = onAndroid ? 0.9 : 1.0;
     let passed = area >= cheekMinArea && ratio > cheekMinRatio;
     if (!passed && onAndroid && width >= 640 && height >= 900) {
@@ -500,13 +600,11 @@ export default function StepBasedCaptureScreen() {
     }
     return {
       passed,
-      headline: passed ? "볼 질감이 잘 잡혔어요." : "볼에 조금만 더 가까이 다가가주세요.",
+      headline: passed ? "디테일 촬영이 잘 잡혔어요." : "볼에 조금만 더 가까이 다가가주세요.",
       detail: passed
         ? "피부 결이 선명하게 보이는 거리입니다."
-        : onAndroid
-          ? "카메라를 볼에 더 가까이 가져가 화면을 넉넉히 채워주세요."
-          : "볼 영역이 프레임의 절반 이상을 차지하도록 화면에 붙는다는 느낌으로 촬영해 주세요.",
-      tip: "볼을 프레임 오른쪽 상단에 맞추고, 화면을 넉넉히 채우도록 천천히 접근하세요.",
+        : "볼을 화면의 70% 이상 채우도록 카메라에 더 다가와 주세요.",
+      tip: "턱선을 화면 아래쪽에 맞추고 볼 중심을 크게 채우면 정밀 분석에 도움이 됩니다.",
       metrics: { area, ratio },
     };
   };
@@ -548,53 +646,6 @@ export default function StepBasedCaptureScreen() {
     return result;
   };
 
-  const submitOxResponses = async () => {
-    if (!sessionIdRef.current) {
-      setGlobalMessage("세션 정보가 없어 다시 시작이 필요합니다.");
-      return;
-    }
-    if (!allOxAnswered) {
-      setOxError("모든 질문에 답변해야 분석을 시작할 수 있습니다.");
-      return;
-    }
-
-    setOxSubmitting(true);
-    setOxError(null);
-    setGlobalMessage("응답을 저장하는 중입니다...");
-
-    const payload = Object.entries(oxAnswers).map(([questionKey, answer]) => ({
-      question_key: questionKey,
-      answer: (answer ?? "O") as "O" | "X",
-    }));
-
-    try {
-      if (!SERVER_BASE_URL) {
-        throw new Error("서버 API 주소가 설정되지 않았습니다.");
-      }
-
-      const response = await fetch(`${SERVER_BASE_URL}/api/analysis-sessions/${sessionIdRef.current}/ox`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionIdRef.current, responses: payload }),
-      });
-      const result = await response.json();
-      if (!response.ok) {
-        throw new Error(result?.error || "OX 저장에 실패했습니다.");
-      }
-      await updateSessionStatus("ox_collected");
-      setOxCompleted(true);
-      await refreshServerReport({
-        loadingMessage: "OX 응답을 반영하는 중입니다...",
-        doneMessage: "OX 응답이 반영되었습니다. 리포트를 확인하세요.",
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "OX 저장에 실패했습니다.";
-      setOxError(message);
-      setGlobalMessage(message);
-    } finally {
-      setOxSubmitting(false);
-    }
-  };
 
   const updateStepState = (index: number, patch: Partial<StepState>) => {
     setStepStates((prev) => {
@@ -608,6 +659,10 @@ export default function StepBasedCaptureScreen() {
     if (!cameraRef.current || isUploading) {
       return;
     }
+    if (!cameraLayout || !focusLayouts[currentStep.overlay]) {
+      setGlobalMessage("가이드 위치를 불러오는 중입니다. 잠시 후 다시 시도해주세요.");
+      return;
+    }
 
     try {
       triggerFlash();
@@ -618,13 +673,11 @@ export default function StepBasedCaptureScreen() {
 
       const captured = await cameraRef.current.takePictureAsync({
         quality: 1,
-        skipProcessing: true,
+        skipProcessing: false,
       });
-      const photo = await optimizePhoto(captured);
-
-      const quality = evaluateCaptureQuality(photo, currentStep);
+      const quality = evaluateCaptureQuality(captured, currentStep);
       updateStepState(currentStepIndex, {
-        previewUri: photo.uri,
+        previewUri: captured.uri,
         quality,
         message: quality.headline,
         status: quality.passed ? "uploading" : "error",
@@ -636,13 +689,37 @@ export default function StepBasedCaptureScreen() {
         return;
       }
 
+      const focusRegion = computeNormalizedRegion(currentStep.overlay, captured);
+      if (__DEV__) {
+        console.log("[capture] focus layout", {
+          overlay: currentStep.overlay,
+          layout: focusLayouts[currentStep.overlay],
+          cameraLayout,
+          photoSize: { width: captured.width, height: captured.height },
+          region: focusRegion,
+        });
+      }
+      if (!focusRegion) {
+        setGlobalMessage("가이드 영역을 찾지 못했습니다. 다시 촬영해주세요.");
+        updateStepState(currentStepIndex, {
+          status: "error",
+          message: "가이드 영역을 찾지 못했습니다.",
+        });
+        setFlashVisible(false);
+        return;
+      }
+
+      const processedPhoto = await optimizePhoto(captured, { crop: focusRegion });
+      updateStepState(currentStepIndex, {
+        previewUri: processedPhoto.uri,
+      });
       updateStepState(currentStepIndex, {
         message: "촬영이 통과되었습니다. 업로드 중...",
       });
 
       let result;
       try {
-        result = await uploadViaApi(photo.uri, currentStep);
+        result = await uploadViaApi(processedPhoto.uri, currentStep);
       } catch (error) {
         if (!isTransientNetworkError(error)) {
           throw error;
@@ -654,7 +731,7 @@ export default function StepBasedCaptureScreen() {
         setGlobalMessage("전송이 끊겨 잠깐 대기 후 다시 시도하는 중입니다.");
         await wait(800);
 
-        result = await uploadViaApi(photo.uri, currentStep);
+        result = await uploadViaApi(processedPhoto.uri, currentStep);
       }
 
       const publicUrl =
@@ -718,11 +795,7 @@ export default function StepBasedCaptureScreen() {
 
         if (idx === ANALYSIS_SEQUENCE.length - 1) {
           const finishTimer = setTimeout(() => {
-            refreshServerReport({
-              loadingMessage: "1차 리포트를 정리하는 중입니다...",
-              doneMessage: "1차 리포트가 준비되었습니다.",
-            });
-            updateSessionStatus("report_ready");
+            fetchSkinAnalysis();
           }, 1000);
           analysisTimers.current.push(
             finishTimer as ReturnType<typeof setTimeout>
@@ -731,22 +804,131 @@ export default function StepBasedCaptureScreen() {
       }, 1600 * (idx + 1));
       analysisTimers.current.push(timer as ReturnType<typeof setTimeout>);
     });
-  }, [refreshServerReport, updateSessionStatus]);
+  }, [fetchSkinAnalysis, updateSessionStatus]);
 
   const isCaptureStage = flowStage === "capture" || flowStage === "intro";
 
-  if (isCaptureStage) {
+  if (detailsChecking) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        {renderCamera()}
+      <SafeAreaView style={styles.captureSafeArea}>
+        <View style={styles.loadingState}>
+          <ActivityIndicator color="#A884CC" />
+          <Text style={styles.loadingText}>맞춤 정보를 불러오는 중입니다...</Text>
+        </View>
       </SafeAreaView>
     );
   }
 
-  if (detailsChecking) {
+  if (isCaptureStage) {
     return (
-      <SafeAreaView style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator color="#A884CC" />
+      <SafeAreaView style={styles.captureSafeArea}>
+        <ScrollView contentContainerStyle={styles.captureContainer} bounces={false}>
+          <View style={styles.header}>
+            <Text style={styles.headerTitle}>볼 집중 스캔</Text>
+            <Text style={styles.headerSubtitle}>두 번의 볼 촬영으로 정밀도를 높여요.</Text>
+          </View>
+
+          <View style={styles.stepCard}>
+            <Text style={styles.stepProgress}>
+              {currentStepIndex + 1}/{STEP_CONFIGS.length}
+            </Text>
+            <Text style={styles.stepTitle}>{currentStep.title}</Text>
+            <Text style={styles.stepDescription}>{currentStep.description}</Text>
+          </View>
+
+          <View style={styles.cameraWrapper}>
+            <View style={styles.cameraSurface} onLayout={handleCameraLayout}>
+              {permission ? (
+                permission.granted ? (
+                  <>
+                    <CameraView
+                      ref={cameraRef}
+                      style={StyleSheet.absoluteFill}
+                      facing="front"
+                      ratio="4:3"
+                    />
+                    <CheekGuideOverlay
+                      onRegionMeasured={(layout) => handleGuideRegionMeasured("cheek", layout)}
+                    />
+                    {flashVisible && <View style={styles.flashOverlay} pointerEvents="none" />}
+                  </>
+                ) : (
+                  <View style={styles.permissionBlock}>
+                    <Text style={styles.permissionText}>카메라 접근 권한이 필요합니다.</Text>
+                    <Pressable style={styles.permissionButton} onPress={requestPermission}>
+                      <Text style={styles.permissionButtonText}>권한 허용하기</Text>
+                    </Pressable>
+                  </View>
+                )
+              ) : (
+                <View style={styles.permissionBlock}>
+                  <ActivityIndicator color="#A884CC" />
+                </View>
+              )}
+            </View>
+            <Text style={styles.guidanceText}>{currentStep.guidance}</Text>
+          </View>
+
+          <View style={styles.statusBlock}>
+            <Text
+              style={[
+                styles.statusLabel,
+                currentState.status === "error" && styles.statusLabelError,
+              ]}
+            >
+              {currentState.message}
+            </Text>
+            {currentState.quality?.tip ? (
+              <Text style={styles.statusTip}>{currentState.quality.tip}</Text>
+            ) : null}
+            <Text style={styles.globalMessage}>{globalMessage}</Text>
+          </View>
+
+          <View style={styles.buttonRow}>
+            <Pressable
+              style={[styles.secondaryButton, isUploading && styles.buttonDisabled]}
+              onPress={() => resetStep(currentStepIndex)}
+              disabled={isUploading}
+            >
+              <Text
+                style={[
+                  styles.secondaryButtonText,
+                  isUploading && styles.secondaryButtonTextDisabled,
+                ]}
+              >
+                다시 촬영
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.primaryButton, isUploading && styles.buttonDisabled]}
+              onPress={handleCapture}
+              disabled={isUploading}
+            >
+              {isUploading ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.primaryButtonText}>사진 찍기</Text>
+              )}
+            </Pressable>
+          </View>
+
+          {currentStepIndex < STEP_CONFIGS.length - 1 && (
+            <Pressable
+              disabled={!isCompleted}
+              onPress={moveNextStep}
+              style={[styles.nextButton, !isCompleted && styles.buttonDisabled]}
+            >
+              <Text
+                style={[
+                  styles.nextButtonText,
+                  !isCompleted && styles.nextButtonTextDisabled,
+                ]}
+              >
+                다음 촬영 진행
+              </Text>
+            </Pressable>
+          )}
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -754,173 +936,16 @@ export default function StepBasedCaptureScreen() {
   return (
     <SafeAreaView style={styles.flowSafeArea}>
       <ScrollView contentContainerStyle={styles.flowContainer}>
-        {flowStage === "ox" && (
-          <OXQuestionView
-            answers={oxAnswers}
-            submitting={oxSubmitting}
-            allAnswered={allOxAnswered}
-            errorMessage={oxError}
-            onAnswer={(key, answer) =>
-              setOxAnswers((prev) => ({ ...prev, [key]: answer }))
-            }
-            onSubmit={submitOxResponses}
-            onBack={returnToReport}
-          />
-        )}
-
         {flowStage === "analyzing" && (
           <AnalysisProgressView steps={analysisSteps} />
         )}
 
         {flowStage === "report" && reportData && (
-          <ReportView
-            data={reportData}
-            onRestart={startSession}
-            onOpenOx={openOxStage}
-            oxCompleted={oxCompleted}
-          />
+          <ReportView data={reportData} onRestart={startSession} />
         )}
       </ScrollView>
     </SafeAreaView>
   );
-
-  function renderCamera() {
-    if (!permission) {
-      return (
-        <View style={styles.cameraStage}>
-          <ActivityIndicator color="#fff" />
-        </View>
-      );
-    }
-
-    if (!permission.granted) {
-      return (
-        <View style={styles.permissionStage}>
-          <Text style={styles.permissionText}>
-            전면 카메라 접근 권한이 필요합니다.
-          </Text>
-          <Pressable style={styles.permissionButton} onPress={requestPermission}>
-            <Text style={styles.permissionButtonText}>권한 허용</Text>
-          </Pressable>
-          <Text style={styles.permissionHint}>
-            권한을 허용하면 자동으로 촬영 세션이 시작됩니다.
-          </Text>
-        </View>
-      );
-    }
-
-    const cleanedTitle = currentStep.title.replace(/^STEP\\s\\d+\\s·\\s/, "");
-
-    return (
-      <View style={styles.cameraStage}>
-        <CameraView
-          ref={cameraRef}
-          style={styles.cameraSurface}
-          facing="front"
-          ratio="4:3"
-        />
-        {currentStep.overlay === "base" ? <BaseGuideOverlay /> : <CheekGuideOverlay />}
-        {flashVisible && <View style={styles.flashOverlay} pointerEvents="none" />}
-
-        <View style={styles.captureTopBar}>
-          <Text style={styles.captureTopLabel}>Tangly 표준 촬영</Text>
-          <View style={styles.captureChipRow}>
-            {STEP_CONFIGS.map((step, index) => {
-              const status = stepStates[index].status;
-              const active = index === currentStepIndex;
-              const completed = status === "completed";
-              return (
-                <View
-                  key={step.id}
-                  style={[
-                    styles.captureChip,
-                    active && styles.captureChipActive,
-                    completed && styles.captureChipDone,
-                  ]}
-                >
-                  <Text style={styles.captureChipStep}>STEP {index + 1}</Text>
-                  <Text style={styles.captureChipTitle}>
-                    {step.title.replace(/^STEP\\s\\d+\\s·\\s/, "")}
-                  </Text>
-                  <Text style={styles.captureChipStatus}>{renderStatusLabel(status)}</Text>
-                </View>
-              );
-            })}
-          </View>
-        </View>
-
-        <View style={styles.captureBottomSheet}>
-          <Text style={styles.captureStepLabel}>
-            STEP {currentStepIndex + 1} · {cleanedTitle}
-          </Text>
-          <Text style={styles.captureDescription}>{currentStep.description}</Text>
-          <Text
-            style={[
-              styles.captureStatus,
-              currentState.status === "error" && styles.captureStatusError,
-            ]}
-          >
-            {currentState.message}
-          </Text>
-          {currentState.quality && (
-            <Text style={styles.captureTip}>{currentState.quality.tip}</Text>
-          )}
-          <View style={styles.captureControlsRow}>
-            <Pressable
-              style={[
-                styles.shutterButton,
-                isUploading && styles.buttonDisabled,
-              ]}
-              onPress={handleCapture}
-              disabled={isUploading}
-            >
-              {isUploading ? (
-                <ActivityIndicator color="#1f1b2e" />
-              ) : (
-                <Text style={styles.shutterLabel}>촬영</Text>
-              )}
-            </Pressable>
-            <Pressable
-              style={[
-                styles.secondaryButton,
-                isUploading && styles.buttonDisabled,
-              ]}
-              onPress={() => resetStep(currentStepIndex)}
-              disabled={isUploading}
-            >
-              <Text style={styles.secondaryButtonText}>다시 촬영</Text>
-            </Pressable>
-          </View>
-          {currentStepIndex < STEP_CONFIGS.length - 1 && (
-            <Pressable
-              disabled={!isCompleted}
-              onPress={moveNextStep}
-              style={[
-                styles.nextStageButton,
-                !isCompleted && styles.buttonDisabled,
-              ]}
-            >
-              <Text style={styles.nextStageText}>다음 단계로 이동</Text>
-            </Pressable>
-          )}
-          <Text style={styles.captureHint}>{globalMessage}</Text>
-        </View>
-      </View>
-    );
-  }
-}
-
-function renderStatusLabel(status: CaptureState) {
-  switch (status) {
-    case "completed":
-      return "저장 완료";
-    case "uploading":
-      return "진행 중";
-    case "error":
-      return "다시 촬영 필요";
-    default:
-      return "대기 중";
-  }
 }
 
 const AnalysisProgressView = ({
@@ -962,153 +987,168 @@ const AnalysisProgressView = ({
   </View>
 );
 
-const OXQuestionView = ({
-  answers,
-  submitting,
-  allAnswered,
-  errorMessage,
-  onAnswer,
-  onSubmit,
-  onBack,
-}: {
-  answers: Record<string, OXAnswer>;
-  submitting: boolean;
-  allAnswered: boolean;
-  errorMessage: string | null;
-  onAnswer: (key: string, answer: "O" | "X") => void;
-  onSubmit: () => void;
-  onBack: () => void;
-}) => (
-  <View style={styles.oxCard}>
-    <Text style={styles.oxTitle}>간단한 질문에 답해주세요</Text>
-    <Text style={styles.oxSubtitle}>
-      생활 습관 정보를 함께 확인하면 리포트가 더 정확해져요.
-    </Text>
-    {OX_QUESTIONS.map((question) => (
-      <View key={question.key} style={styles.oxQuestion}>
-        <Text style={styles.oxQuestionTitle}>{question.title}</Text>
-        <Text style={styles.oxQuestionDesc}>{question.description}</Text>
-        <View style={styles.oxAnswerRow}>
-          {(["O", "X"] as const).map((option) => {
-            const selected = answers[question.key] === option;
-            return (
-              <Pressable
-                key={option}
-                style={[
-                  styles.oxAnswerButton,
-                  selected && styles.oxAnswerSelected,
-                ]}
-                onPress={() => onAnswer(question.key, option)}
-              >
-                <Text
-                  style={[
-                    styles.oxAnswerLabel,
-                    selected && styles.oxAnswerLabelSelected,
-                  ]}
-                >
-                  {option}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
-    ))}
-    {errorMessage && <Text style={styles.oxError}>{errorMessage}</Text>}
-    <Pressable
-      style={[styles.oxSubmit, (!allAnswered || submitting) && styles.buttonDisabled]}
-      disabled={!allAnswered || submitting}
-      onPress={onSubmit}
-    >
-      {submitting ? (
-        <ActivityIndicator color="#fff" />
-      ) : (
-        <Text style={styles.oxSubmitText}>분석 시작</Text>
-      )}
-    </Pressable>
-    <Pressable style={styles.oxBack} onPress={onBack}>
-      <Text style={styles.oxBackText}>리포트로 돌아가기</Text>
-    </Pressable>
-  </View>
-);
-
 const ReportView = ({
   data,
   onRestart,
-  onOpenOx,
-  oxCompleted,
 }: {
   data: ReportData;
   onRestart: () => void;
-  onOpenOx: () => void;
-  oxCompleted: boolean;
-}) => (
-  <View style={styles.reportCard}>
-    <Text style={styles.reportTitle}>1차 피부 리포트</Text>
-    <Text style={styles.reportSession}>세션: {data.sessionLabel}</Text>
-    <Text style={styles.reportSummary}>{data.summary}</Text>
-    <Text style={styles.reportHighlight}>{data.highlight}</Text>
-    {data.needs.length > 0 && <NeedFocusList needs={data.needs} />}
+}) => {
+  const aiReport = data.aiReport ?? null;
+  const summaryLines =
+    aiReport?.summary?.filter((line) => !!line?.trim()) ?? [];
+  const keyFindings = aiReport?.keyFindings ?? [];
+  const actions = aiReport?.actions ?? [];
+  const warnings = aiReport?.warnings ?? [];
 
-    {data.recommendations.length > 0 && (
-      <View style={styles.recommendSection}>
-        <Text style={styles.recommendSectionTitle}>세션 맞춤 제품 추천</Text>
-        <Text style={styles.recommendIntro}>
-          그래서 이번 추천은, 지금 피부 상태를 기준으로 골랐어요.
-        </Text>
-        <Text style={styles.recommendIntroSecondary}>
-          지금 단계에서 가장 부담 없이 도움이 될 제품들이에요.
-        </Text>
-        {data.recommendations.map((item) => (
-          <ProductRecommendationCard key={item.id} item={item} />
-        ))}
-      </View>
-    )}
+  const translateStatus = (status?: string | null) => {
+    switch ((status ?? "").toLowerCase()) {
+      case "good":
+        return { label: "좋음", style: styles.reportBadgeSuccess };
+      case "caution":
+        return { label: "주의", style: styles.reportBadgeWarning };
+      default:
+        return { label: "보통", style: null };
+    }
+  };
 
-    <View style={styles.reportItemList}>
-      {data.items.map((item) => (
-        <View key={item.id} style={styles.reportItem}>
-          <View style={styles.reportItemHeader}>
-            <Text style={styles.reportItemTitle}>{item.title}</Text>
-            <Text
-              style={[
-                styles.reportBadge,
-                item.status === "주의" && styles.reportBadgeWarning,
-              ]}
-            >
-              {item.status}
-            </Text>
-          </View>
-          <Text style={styles.reportItemDescription}>{item.description}</Text>
-          <Text style={styles.reportItemComparison}>{item.comparison}</Text>
-        </View>
-      ))}
-    </View>
+  const formatFrequency = (frequency?: string | null) => {
+    switch ((frequency ?? "").toLowerCase()) {
+      case "daily":
+        return "매일 권장";
+      case "weekly":
+        return "주 1회 권장";
+      case "three_per_week":
+        return "주 3회 권장";
+      default:
+        return "권장 주기 자유";
+    }
+  };
 
-    <View style={styles.reportTips}>
-      <Text style={styles.reportTipsTitle}>케어 팁</Text>
-      {data.tips.map((tip) => (
-        <Text key={tip} style={styles.reportTip}>
-          • {tip}
-        </Text>
-      ))}
-    </View>
+  const displayFindingTitle = (title?: string | null) => {
+    if (!title) return "";
+    const normalized = title.toLowerCase().trim();
+    return SKIN_SECTION_LABELS[normalized] ?? title;
+  };
 
-    <Pressable
-      style={[styles.reportOxButton, oxCompleted && styles.buttonDisabled]}
-      onPress={onOpenOx}
-      disabled={oxCompleted}
-    >
-      <Text style={styles.reportOxText}>
-        {oxCompleted ? "OX 응답이 저장되었습니다" : "생활 습관 OX 입력하기"}
+  return (
+    <View style={styles.reportCard}>
+      <Text style={styles.reportTitle}>AI 피부 리포트</Text>
+      <Text style={styles.reportSession}>세션: {data.sessionLabel}</Text>
+      {aiReport?.oneLiner ? (
+        <Text style={styles.reportHighlight}>{aiReport.oneLiner}</Text>
+      ) : (
+        <Text style={styles.reportHighlight}>{data.highlight}</Text>
+      )}
+      <Text style={styles.reportSummary}>
+        {summaryLines.length ? summaryLines.join("\n") : data.summary}
       </Text>
-    </Pressable>
 
-    <Pressable style={styles.reportRestart} onPress={onRestart}>
-      <Text style={styles.reportRestartText}>새로운 촬영 시작</Text>
-    </Pressable>
-  </View>
-);
+      {aiReport?.focus?.reason && (
+        <View style={styles.aiFocusCard}>
+          <Text style={styles.aiFocusLabel}>집중 케어</Text>
+          <Text style={styles.aiFocusText}>{aiReport.focus.reason}</Text>
+        </View>
+      )}
+
+      {keyFindings.length > 0 && (
+        <View style={styles.aiFindingSection}>
+          <Text style={styles.aiSectionTitle}>핵심 관찰</Text>
+          {keyFindings.map((finding, index) => {
+            const { label, style } = translateStatus(finding.status);
+            return (
+              <View key={`${finding.title}-${index}`} style={styles.aiFindingCard}>
+                <View style={styles.aiFindingHeader}>
+                    <Text style={styles.aiFindingTitle}>{displayFindingTitle(finding.title)}</Text>
+                  <Text style={[styles.reportBadge, style]}>{label}</Text>
+                </View>
+                <Text style={styles.aiFindingDescription}>{finding.description}</Text>
+              </View>
+            );
+          })}
+        </View>
+      )}
+
+      {actions.length > 0 && (
+        <View style={styles.aiActionSection}>
+          <Text style={styles.aiSectionTitle}>관리법 제안</Text>
+          {actions.map((action, index) => (
+            <View key={`${action.title}-${index}`} style={styles.aiActionCard}>
+              <Text style={styles.aiActionTitle}>{action.title}</Text>
+              <Text style={styles.aiActionDescription}>{action.description}</Text>
+              <Text style={styles.aiActionMeta}>{formatFrequency(action.frequency)}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {warnings.length > 0 && (
+        <View style={styles.aiWarningCard}>
+          <Text style={styles.aiSectionTitle}>주의 안내</Text>
+          {warnings.map((warning) => (
+            <Text key={warning} style={styles.aiWarningText}>
+              • {warning}
+            </Text>
+          ))}
+        </View>
+      )}
+
+      {data.needs.length > 0 && <NeedFocusList needs={data.needs} />}
+
+      {data.recommendations.length > 0 && (
+        <View style={styles.recommendSection}>
+          <Text style={styles.recommendSectionTitle}>세션 맞춤 제품 추천</Text>
+          <Text style={styles.recommendIntro}>
+            그래서 이번 추천은, 지금 피부 상태를 기준으로 골랐어요.
+          </Text>
+          <Text style={styles.recommendIntroSecondary}>
+            지금 단계에서 가장 부담 없이 도움이 될 제품들이에요.
+          </Text>
+          {data.recommendations.map((item) => (
+            <ProductRecommendationCard key={item.id} item={item} />
+          ))}
+        </View>
+      )}
+
+      {!aiReport && (
+        <>
+          <View style={styles.reportItemList}>
+            {data.items.map((item) => (
+              <View key={item.id} style={styles.reportItem}>
+                <View style={styles.reportItemHeader}>
+                  <Text style={styles.reportItemTitle}>{item.title}</Text>
+                  <Text
+                    style={[
+                      styles.reportBadge,
+                      item.status === "주의" && styles.reportBadgeWarning,
+                    ]}
+                  >
+                    {item.status}
+                  </Text>
+                </View>
+                <Text style={styles.reportItemDescription}>{item.description}</Text>
+                <Text style={styles.reportItemComparison}>{item.comparison}</Text>
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.reportTips}>
+            <Text style={styles.reportTipsTitle}>케어 팁</Text>
+            {data.tips.map((tip) => (
+              <Text key={tip} style={styles.reportTip}>
+                • {tip}
+              </Text>
+            ))}
+          </View>
+        </>
+      )}
+
+      <Pressable style={styles.reportRestart} onPress={onRestart}>
+        <Text style={styles.reportRestartText}>새로운 촬영 시작</Text>
+      </Pressable>
+    </View>
+  );
+};
 
 const NeedFocusList = ({ needs }: { needs: NeedFocus[] }) => (
   <View style={styles.needsCard}>
@@ -1164,41 +1204,40 @@ const ProductRecommendationCard = ({
   </View>
 );
 
-const BaseGuideOverlay = () => (
-  <View pointerEvents="none" style={styles.overlayContainer}>
-    <View style={styles.baseGuideCircle} />
-    <Text style={styles.overlayText}>얼굴 전체를 가이드 원 안에 맞춰주세요</Text>
-  </View>
-);
+type GuideOverlayProps = {
+  onRegionMeasured: (layout: LayoutRectangle) => void;
+};
 
-const CheekGuideOverlay = () => (
+const CheekGuideOverlay = ({ onRegionMeasured }: GuideOverlayProps) => (
   <View pointerEvents="none" style={styles.overlayContainer}>
-    <View style={styles.cheekGuideCircle} />
-    <Text style={styles.overlayText}>볼을 가득 채우도록 가까이 다가가세요</Text>
+    <View
+      style={styles.cheekGuideCircle}
+      onLayout={(event) => onRegionMeasured(event.nativeEvent.layout)}
+    />
   </View>
 );
 
 const buildReportFromQuality = (
   states: StepState[],
   sessionId: string | null,
-  oxAnswers: Record<string, OXAnswer>
+  oxAnswers?: Record<string, OxAnswer | null>
 ): ReportData => {
-  const baseQuality = states[0]?.quality;
-  const cheekQuality = states[1]?.quality;
+  const firstCheekQuality = states[0]?.quality;
+  const detailCheekQuality = states[1]?.quality;
 
-  const feelsTight = oxAnswers["tight_after_wash"] === "O";
-  const makeupCakey = oxAnswers["makeup_cakey"] === "O";
-  const elasticityConcern = oxAnswers["elasticity_change"] === "O";
-  const feelsSensitive = oxAnswers["skin_sensitive_now"] === "O";
-  const troubleFree = oxAnswers["no_recent_trouble"] === "O";
+  const feelsTight = oxAnswers?.["tight_after_wash"] === "O";
+  const makeupCakey = oxAnswers?.["makeup_cakey"] === "O";
+  const elasticityConcern = oxAnswers?.["elasticity_change"] === "O";
+  const feelsSensitive = oxAnswers?.["skin_sensitive_now"] === "O";
+  const troubleFree = oxAnswers?.["no_recent_trouble"] === "O";
 
-  const empathyIntro = baseQuality?.passed
-    ? "전체적으로 피부 컨디션은 나쁘지 않은 편이에요."
-    : "기본 촬영에서 읽히는 정보가 살짝 부족했지만, 지금 피부는 충분히 회복 가능한 상태예요.";
+  const empathyIntro = firstCheekQuality?.passed
+    ? "첫 번째 볼 촬영에서 전체 라인이 고르게 잡혔어요."
+    : "첫 촬영 정보가 살짝 부족했지만, 지금 피부는 충분히 회복 가능한 상태예요.";
 
-  const photoNarrative = cheekQuality?.passed
-    ? "볼 쪽은 아직 탄력이 비교적 잘 유지되고 있어요."
-    : "볼 쪽이 예전보다 탄력을 유지하는 힘이 조금 약해진 상태예요.";
+  const photoNarrative = detailCheekQuality?.passed
+    ? "디테일 촬영에서도 결이 비교적 균일하게 유지되고 있어요."
+    : "디테일 촬영에서 결이 다소 흐려 보여 추가 관리가 필요해요.";
 
   const oxNarratives: string[] = [];
   if (feelsTight) {
@@ -1223,7 +1262,7 @@ const buildReportFromQuality = (
   }
 
   const careDirection = (() => {
-    if (!cheekQuality?.passed || elasticityConcern || feelsTight) {
+    if (!detailCheekQuality?.passed || elasticityConcern || feelsTight) {
       return "그래서 이번엔 수분을 많이 넣기보다는 탄력을 받쳐주면서 수분을 지켜주는 관리가 잘 맞아요.";
     }
     if (makeupCakey) {
@@ -1251,9 +1290,9 @@ const buildReportFromQuality = (
     {
       id: "overall",
       title: "전체 컨디션",
-      description: baseQuality?.passed
-        ? "기본 촬영 기준으로 피부 결은 크게 무너지지 않았어요."
-        : "기본 촬영 정보가 제한적이라 조심스럽게 안내드릴게요.",
+      description: firstCheekQuality?.passed
+        ? "첫 번째 촬영 기준으로 피부 결은 크게 무너지지 않았어요."
+        : "첫 촬영 정보가 제한적이라 조심스럽게 안내드릴게요.",
       comparison: troubleFree
         ? "특별한 트러블이 없다는 응답과도 흐름이 비슷해요."
         : "부분적으로 컨디션이 흔들리면 트러블로 번지기 쉬운 시기예요.",
@@ -1262,13 +1301,13 @@ const buildReportFromQuality = (
     {
       id: "elasticity",
       title: "탄력",
-      description: cheekQuality?.passed
+      description: detailCheekQuality?.passed
         ? "볼 라인 탄력이 아직은 잘 유지되고 있어요."
         : "볼 라인이 아래로 살짝 끌리는 신호가 보여요.",
       comparison: elasticityConcern
         ? "탄력이 예전 같지 않다는 답변과도 맞물려 보여요."
         : "지금은 급하게 당길 필요는 없어요.",
-      status: cheekQuality?.passed && !elasticityConcern ? "보통" : "주의",
+      status: detailCheekQuality?.passed && !elasticityConcern ? "보통" : "주의",
     },
     {
       id: "hydration",
@@ -1306,68 +1345,171 @@ const buildReportFromQuality = (
       {
         id: "routine_focus",
         label: feelsTight || makeupCakey ? "수분 유지 루틴" : "안정 관리",
-        level: !cheekQuality?.passed || feelsTight ? "high" : "medium",
+        level: !detailCheekQuality?.passed || feelsTight ? "high" : "medium",
         description:
-          "이번 기본 리포트는 촬영 결과와 OX 응답을 엮어 현재에 맞는 관리 방향을 제안합니다.",
+          "이번 리포트는 촬영 결과와 OX 응답을 엮어 현재에 맞는 관리 방향을 제안합니다.",
       },
     ],
-    recommendations: [],
+      recommendations: [],
+    aiReport: null,
   };
 };
 
 const styles = StyleSheet.create({
-  safeArea: {
+  captureSafeArea: {
     flex: 1,
-    backgroundColor: "#050109",
+    backgroundColor: "#FFFFFF",
   },
-  flowSafeArea: {
-    flex: 1,
-    backgroundColor: "#F6F1FA",
-  },
-  flowContainer: {
+  captureContainer: {
     padding: 20,
     gap: 20,
   },
-  cameraStage: {
+  loadingState: {
     flex: 1,
-    backgroundColor: "#000",
-    justifyContent: "flex-end",
-  },
-  cameraSurface: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: 0,
-    right: 0,
-  },
-  permissionStage: {
-    flex: 1,
-    backgroundColor: "#0E0A18",
     alignItems: "center",
     justifyContent: "center",
-    padding: 32,
-    gap: 16,
+    gap: 8,
+  },
+  loadingText: {
+    fontSize: 14,
+    color: "#6F6F73",
+  },
+  header: {
+    gap: 4,
+  },
+  headerTitle: {
+    fontSize: 24,
+    fontWeight: "700",
+    color: "#1F1F24",
+  },
+  headerSubtitle: {
+    fontSize: 14,
+    color: "#6F6F73",
+  },
+  stepCard: {
+    borderRadius: 20,
+    backgroundColor: "#F7F4FB",
+    padding: 16,
+    gap: 6,
+  },
+  stepProgress: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#8D7EB3",
+  },
+  stepTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#1F1F24",
+  },
+  stepDescription: {
+    fontSize: 14,
+    color: "#6F6F73",
+  },
+  cameraWrapper: {
+    gap: 10,
+  },
+  cameraSurface: {
+    width: "100%",
+    height: 420,
+    borderRadius: 28,
+    overflow: "hidden",
+    backgroundColor: "#000000",
+  },
+  permissionBlock: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    padding: 24,
   },
   permissionText: {
-    color: "#E7DDF3",
-    marginBottom: 8,
+    fontSize: 15,
+    color: "#F2F2F7",
     textAlign: "center",
-    fontSize: 16,
   },
   permissionButton: {
-    backgroundColor: "#A884CC",
-    paddingVertical: 12,
-    paddingHorizontal: 32,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
     borderRadius: 999,
+    backgroundColor: "#A884CC",
   },
   permissionButtonText: {
-    color: "white",
-    fontWeight: "bold",
+    color: "#FFFFFF",
+    fontWeight: "700",
   },
-  permissionHint: {
-    color: "#9F94B9",
-    fontSize: 12,
+  guidanceText: {
+    fontSize: 13,
+    color: "#6F6F73",
     textAlign: "center",
+  },
+  statusBlock: {
+    gap: 6,
+    paddingVertical: 4,
+  },
+  statusLabel: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#1F1F24",
+  },
+  statusLabelError: {
+    color: "#C0392B",
+  },
+  statusTip: {
+    fontSize: 13,
+    color: "#7A738C",
+  },
+  globalMessage: {
+    fontSize: 12,
+    color: "#9A94A8",
+  },
+  buttonRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  primaryButton: {
+    flex: 1,
+    borderRadius: 16,
+    backgroundColor: "#A884CC",
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  primaryButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  secondaryButton: {
+    flex: 1,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#D9CCE9",
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  secondaryButtonText: {
+    color: "#5A4E73",
+    fontWeight: "600",
+  },
+  secondaryButtonTextDisabled: {
+    color: "#A5A1B4",
+  },
+  nextButton: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E0D8F1",
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  nextButtonText: {
+    color: "#5A4E73",
+    fontWeight: "600",
+  },
+  nextButtonTextDisabled: {
+    color: "#B2ACC4",
+  },
+  buttonDisabled: {
+    opacity: 0.55,
   },
   overlayContainer: {
     position: "absolute",
@@ -1377,28 +1519,13 @@ const styles = StyleSheet.create({
     bottom: 0,
     alignItems: "center",
     justifyContent: "center",
-    gap: 16,
-  },
-  baseGuideCircle: {
-    width: 260,
-    height: 260,
-    borderRadius: 130,
-    borderWidth: 3,
-    borderColor: "rgba(255,255,255,0.8)",
   },
   cheekGuideCircle: {
-    width: 200,
-    height: 200,
-    borderRadius: 100,
-    borderWidth: 4,
-    borderColor: "rgba(255,192,203,0.9)",
-    transform: [{ translateX: 60 }],
-  },
-  overlayText: {
-    color: "white",
-    fontWeight: "600",
-    textShadowColor: "rgba(0,0,0,0.4)",
-    textShadowRadius: 4,
+    width: 220,
+    height: 220,
+    borderRadius: 110,
+    borderWidth: 3,
+    borderColor: "rgba(255,255,255,0.85)",
   },
   flashOverlay: {
     position: "absolute",
@@ -1409,128 +1536,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     opacity: 0.9,
   },
-  captureTopBar: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    paddingTop: 24,
-    paddingHorizontal: 20,
-    gap: 12,
-  },
-  captureTopLabel: {
-    color: "#DCCEF5",
-    fontSize: 13,
-    letterSpacing: 0.3,
-  },
-  captureChipRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  captureChip: {
+  flowSafeArea: {
     flex: 1,
-    borderRadius: 16,
-    padding: 12,
-    backgroundColor: "rgba(8,5,18,0.55)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "#F6F1FA",
   },
-  captureChipActive: {
-    borderColor: "#FFFFFF",
-    backgroundColor: "rgba(8,5,18,0.75)",
-  },
-  captureChipDone: {
-    backgroundColor: "rgba(168,132,204,0.65)",
-    borderColor: "rgba(255,255,255,0.35)",
-  },
-  captureChipStep: {
-    color: "#C9BEDF",
-    fontSize: 11,
-  },
-  captureChipTitle: {
-    color: "#FFFFFF",
-    fontWeight: "600",
-    fontSize: 13,
-    marginTop: 2,
-  },
-  captureChipStatus: {
-    color: "#D4CCE5",
-    fontSize: 11,
-    marginTop: 4,
-  },
-  captureBottomSheet: {
-    backgroundColor: "rgba(5,4,11,0.72)",
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 36,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    gap: 10,
-  },
-  captureStepLabel: {
-    color: "#FFFFFF",
-    fontSize: 18,
-    fontWeight: "700",
-  },
-  captureDescription: {
-    color: "#CEC4DF",
-  },
-  captureStatus: {
-    color: "#E4DDF7",
-    fontWeight: "600",
-  },
-  captureStatusError: {
-    color: "#F5A8A0",
-  },
-  captureTip: {
-    color: "#CFC3EB",
-    fontSize: 12,
-  },
-  captureControlsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginTop: 8,
-  },
-  shutterButton: {
-    backgroundColor: "#FFFFFF",
-    paddingVertical: 16,
-    borderRadius: 999,
-    alignItems: "center",
-    flex: 1,
-  },
-  shutterLabel: {
-    fontWeight: "bold",
-    color: "#1f1b2e",
-  },
-  secondaryButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.6)",
-  },
-  secondaryButtonText: {
-    color: "white",
-    fontWeight: "600",
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
-  nextStageButton: {
-    backgroundColor: "#A884CC",
-    borderRadius: 999,
-    paddingVertical: 12,
-    alignItems: "center",
-  },
-  nextStageText: {
-    color: "white",
-    fontWeight: "700",
-  },
-  captureHint: {
-    color: "#BDB0D4",
-    fontSize: 12,
-    marginTop: 4,
+  flowContainer: {
+    padding: 20,
+    gap: 20,
   },
   analysisCard: {
     backgroundColor: "white",
@@ -1577,81 +1589,6 @@ const styles = StyleSheet.create({
     width: 60,
     textAlign: "right",
     color: "#78738C",
-  },
-  oxCard: {
-    backgroundColor: "white",
-    borderRadius: 20,
-    padding: 20,
-    gap: 16,
-  },
-  oxTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#1f1b2e",
-  },
-  oxSubtitle: {
-    color: "#4B3A63",
-    fontSize: 13,
-  },
-  oxQuestion: {
-    borderWidth: 1,
-    borderColor: "#E4DDF7",
-    borderRadius: 16,
-    padding: 14,
-    gap: 8,
-  },
-  oxQuestionTitle: {
-    fontWeight: "600",
-    color: "#1f1b2e",
-  },
-  oxQuestionDesc: {
-    color: "#6A4BA1",
-    fontSize: 12,
-  },
-  oxAnswerRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  oxAnswerButton: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: "#D6C7F1",
-    borderRadius: 999,
-    paddingVertical: 10,
-    alignItems: "center",
-  },
-  oxAnswerSelected: {
-    backgroundColor: "#A884CC",
-    borderColor: "#A884CC",
-  },
-  oxAnswerLabel: {
-    fontWeight: "600",
-    color: "#6A4BA1",
-  },
-  oxAnswerLabelSelected: {
-    color: "white",
-  },
-  oxError: {
-    color: "#C0392B",
-    fontSize: 12,
-  },
-  oxSubmit: {
-    backgroundColor: "#1f1b2e",
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: "center",
-  },
-  oxSubmitText: {
-    color: "white",
-    fontWeight: "700",
-  },
-  oxBack: {
-    marginTop: 8,
-    alignItems: "center",
-  },
-  oxBackText: {
-    color: "#6A4BA1",
-    fontWeight: "600",
   },
   reportCard: {
     backgroundColor: "white",
@@ -1704,6 +1641,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
+  reportBadgeSuccess: {
+    backgroundColor: "#D5F5E3",
+    color: "#117A65",
+  },
   reportBadgeWarning: {
     backgroundColor: "#FADBD8",
     color: "#C0392B",
@@ -1729,15 +1670,83 @@ const styles = StyleSheet.create({
     color: "#4B3A63",
     fontSize: 13,
   },
-  reportOxButton: {
-    backgroundColor: "#F3E9FF",
+  aiFocusCard: {
+    borderRadius: 14,
+    backgroundColor: "#F0ECFB",
+    padding: 12,
+    marginTop: 8,
+  },
+  aiFocusLabel: {
+    color: "#7E5EC9",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  aiFocusText: {
+    color: "#4B3A63",
+    fontSize: 13,
+    marginTop: 4,
+  },
+  aiFindingSection: {
+    gap: 10,
+    marginTop: 12,
+  },
+  aiActionSection: {
+    gap: 10,
+    marginTop: 12,
+  },
+  aiSectionTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#1f1b2e",
+  },
+  aiFindingCard: {
+    backgroundColor: "#F6F1FA",
     borderRadius: 12,
-    paddingVertical: 12,
+    padding: 12,
+    gap: 6,
+  },
+  aiFindingHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
   },
-  reportOxText: {
-    color: "#5C3AA1",
-    fontWeight: "700",
+  aiFindingTitle: {
+    fontWeight: "600",
+    color: "#1f1b2e",
+  },
+  aiFindingDescription: {
+    color: "#4B3A63",
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  aiActionCard: {
+    backgroundColor: "#F8F9FA",
+    borderRadius: 12,
+    padding: 12,
+    gap: 6,
+  },
+  aiActionTitle: {
+    fontWeight: "600",
+    color: "#1f1b2e",
+  },
+  aiActionDescription: {
+    color: "#4B3A63",
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  aiActionMeta: {
+    color: "#6A4BA1",
+    fontSize: 12,
+  },
+  aiWarningCard: {
+    backgroundColor: "#FFF4E6",
+    borderRadius: 12,
+    padding: 12,
+    gap: 4,
+  },
+  aiWarningText: {
+    color: "#B35400",
+    fontSize: 13,
   },
   reportRestart: {
     backgroundColor: "#1f1b2e",

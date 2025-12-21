@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -100,17 +100,7 @@ export default function RoutineScreen() {
     };
   }, []);
 
-  useEffect(() => {
-    if (planLoading || !userId) {
-      return;
-    }
-    setMonthlyRoutine(null);
-    setWeeklyRoutine(null);
-    loadRoutine(planType, userId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [planType, planLoading, userId]);
-
-  const loadRoutine = async (plan: PlanType, ownerId: string) => {
+  const loadRoutine = useCallback(async (plan: PlanType, ownerId: string) => {
     try {
       setRoutineLoading(true);
       if (plan === "pro") {
@@ -134,7 +124,16 @@ export default function RoutineScreen() {
     } finally {
       setRoutineLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (planLoading || !userId) {
+      return;
+    }
+    setMonthlyRoutine(null);
+    setWeeklyRoutine(null);
+    loadRoutine(planType, userId);
+  }, [planType, planLoading, userId, loadRoutine]);
 
   const handleAutoRebalance = async () => {
     if (!weeklyRoutine || !userId) return;
