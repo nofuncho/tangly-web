@@ -13,6 +13,8 @@ type RoutineAction = {
   description: string;
 };
 
+type RoutineTab = "weekly" | "monthly";
+
 type RoutineStep = {
   key: string;
   label: string;
@@ -44,16 +46,19 @@ type WeeklyRoutineResponse = {
   progress: {
     completed: number;
     target: number;
+    daysChecked: string[];
   };
 };
 
 const DAY_ORDER = ["월", "화", "수", "목", "금", "토", "일"];
+const WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"];
 
 export default function RoutineScreen() {
   const [planType, setPlanType] = useState<PlanType>("free");
   const [planLoading, setPlanLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
   const { loading: detailsChecking } = useRequireProfileDetails();
+  const [activeTab, setActiveTab] = useState<RoutineTab>("monthly");
 
   const [monthlyRoutine, setMonthlyRoutine] = useState<MonthlyRoutineResponse | null>(null);
   const [weeklyRoutine, setWeeklyRoutine] = useState<WeeklyRoutineResponse | null>(null);
@@ -100,24 +105,60 @@ export default function RoutineScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    if (planLoading) return;
+    setActiveTab((prev) => {
+      if (planType === "pro") {
+        return "weekly";
+      }
+      return prev === "monthly" ? prev : "monthly";
+    });
+  }, [planLoading, planType]);
+
   const loadRoutine = useCallback(async (plan: PlanType, ownerId: string) => {
     try {
       setRoutineLoading(true);
+      const fetches: Promise<void>[] = [];
+
       if (plan === "pro") {
-        const response = await fetch(buildServerUrl(`/api/routines/weekly?userId=${ownerId}`));
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload?.error ?? "주간 루틴을 불러오지 못했습니다.");
-        }
-        setWeeklyRoutine(payload.routine as WeeklyRoutineResponse);
-      } else {
-        const response = await fetch(buildServerUrl(`/api/routines/monthly?userId=${ownerId}`));
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload?.error ?? "월간 루틴을 불러오지 못했습니다.");
-        }
-        setMonthlyRoutine(payload.routine as MonthlyRoutineResponse);
+        fetches.push(
+          fetch(buildServerUrl(`/api/routines/weekly?userId=${ownerId}`))
+            .then(async (response) => {
+              const payload = await response.json();
+              if (!response.ok) {
+                throw new Error(payload?.error ?? "주간 루틴을 불러오지 못했습니다.");
+              }
+              setWeeklyRoutine(payload.routine as WeeklyRoutineResponse);
+            })
+            .catch((error) => {
+              console.warn("weekly routine fetch error", error);
+              Alert.alert(
+                "루틴 오류",
+                error instanceof Error ? error.message : "주간 루틴을 불러오지 못했습니다."
+              );
+            })
+        );
       }
+
+      fetches.push(
+        fetch(buildServerUrl(`/api/routines/monthly?userId=${ownerId}`))
+          .then(async (response) => {
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload?.error ?? "월간 루틴을 불러오지 못했습니다.");
+            }
+            setMonthlyRoutine(payload.routine as MonthlyRoutineResponse);
+          })
+          .catch((error) => {
+            console.warn("monthly routine fetch error", error);
+            Alert.alert(
+              "루틴 오류",
+              error instanceof Error ? error.message : "월간 루틴을 불러오지 못했습니다."
+            );
+          })
+      );
+
+      await Promise.all(fetches);
     } catch (error) {
       const message = error instanceof Error ? error.message : "루틴을 불러오지 못했습니다.";
       Alert.alert("루틴 오류", message);
@@ -145,10 +186,6 @@ export default function RoutineScreen() {
     if (!weeklyRoutine || !userId) return;
     const selected = weeklyRoutine.recommendedDays;
     const hasDay = selected.includes(day);
-    if (!hasDay && selected.length >= 3) {
-      Alert.alert("알림", "주 3회 기준으로 추천드려요. 선택된 요일 중 하나를 해제해 주세요.");
-      return;
-    }
     const next = hasDay ? selected.filter((item) => item !== day) : [...selected, day];
     const ordered = next.sort((a, b) => DAY_ORDER.indexOf(a) - DAY_ORDER.indexOf(b));
     await updateWeeklySettings({ recommendedDays: ordered });
@@ -196,8 +233,16 @@ export default function RoutineScreen() {
     }
   };
 
-  const handleCheckIn = async () => {
+  const handleCheckIn = async (targetDate: string) => {
     if (!userId || !weeklyRoutine || checking) return;
+    const today = getTodayIso();
+    if (targetDate !== today) {
+      Alert.alert("오늘만 체크할 수 있어요", "오늘 루틴을 완료했다면 오늘 날짜를 눌러 체크해 주세요.");
+      return;
+    }
+    if (weeklyRoutine.progress.daysChecked.includes(today)) {
+      return;
+    }
     try {
       setChecking(true);
       const response = await fetch(buildServerUrl("/api/routines/weekly/check"), {
@@ -209,14 +254,10 @@ export default function RoutineScreen() {
       if (!response.ok) {
         throw new Error(payload?.error ?? "체크를 기록하지 못했습니다.");
       }
-      setWeeklyRoutine((prev) =>
-        prev
-          ? {
-              ...prev,
-              progress: payload.progress ?? prev.progress,
-            }
-          : prev
-      );
+      const routine = (payload?.routine as WeeklyRoutineResponse | undefined) ?? null;
+      if (routine) {
+        setWeeklyRoutine(routine);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "체크를 기록하지 못했습니다.";
       Alert.alert("체크 실패", message);
@@ -225,7 +266,27 @@ export default function RoutineScreen() {
     }
   };
 
-  const renderFreeView = () => {
+  const showReason = (mode: RoutineTab) => {
+    if (mode === "weekly" && weeklyRoutine) {
+      const reasons = [
+        weeklyRoutine.focusReason,
+        weeklyRoutine.conclusion,
+        weeklyRoutine.warnings[0],
+      ].filter(Boolean);
+      Alert.alert("이 루틴을 추천한 이유", reasons.join("\n\n"));
+      return;
+    }
+    if (mode === "monthly" && monthlyRoutine) {
+      const reasons = [
+        monthlyRoutine.goal,
+        monthlyRoutine.summary.slice(0, 2).join("\n"),
+        monthlyRoutine.cautions ?? "",
+      ].filter(Boolean);
+      Alert.alert("이 루틴을 추천한 이유", reasons.join("\n\n"));
+    }
+  };
+
+  const renderMonthlyRoutine = (showWeeklyUpsell: boolean) => {
     if (!monthlyRoutine) {
       return (
         <View style={styles.loadingCard}>
@@ -238,8 +299,15 @@ export default function RoutineScreen() {
     return (
       <>
         <View style={styles.card}>
-          <Text style={styles.sectionLabel}>{monthlyRoutine.periodMonth.replace(/-/g, ".")}</Text>
-          <Text style={styles.mainTitle}>이번 달 목표</Text>
+          <View style={styles.rowBetween}>
+            <View>
+              <Text style={styles.sectionLabel}>{monthlyRoutine.periodMonth.replace(/-/g, ".")}</Text>
+              <Text style={styles.mainTitle}>이번 달 목표</Text>
+            </View>
+            <Pressable style={styles.reasonButton} onPress={() => showReason("monthly")}>
+              <Text style={styles.reasonButtonText}>이 루틴을 추천한 이유</Text>
+            </Pressable>
+          </View>
           <Text style={styles.mainHighlight}>{monthlyRoutine.goal}</Text>
           <View style={styles.divider} />
           <Text style={styles.cardSubtitle}>기본 루틴</Text>
@@ -263,21 +331,36 @@ export default function RoutineScreen() {
           </View>
         ) : null}
 
-        <View style={[styles.card, styles.lockedCard]}>
-          <Text style={styles.mainTitle}>주간 루틴 (PRO)</Text>
-          <Text style={styles.cardText}>주간 포커스와 주 3회 체크는 PRO 전용 기능입니다.</Text>
-          <Pressable
-            style={styles.ctaButton}
-            onPress={() => Alert.alert("PRO 안내", "마이페이지에서 PRO 모드를 활성화해 주세요.")}
-          >
-            <Text style={styles.ctaText}>PRO 혜택 보기</Text>
-          </Pressable>
-        </View>
+        {showWeeklyUpsell ? (
+          <View style={[styles.card, styles.lockedCard]}>
+            <Text style={styles.mainTitle}>주간 루틴 (PRO)</Text>
+            <Text style={styles.cardText}>주간 포커스와 데일리 체크는 PRO 전용 기능입니다.</Text>
+            <Pressable
+              style={styles.ctaButton}
+              onPress={() => Alert.alert("PRO 안내", "마이페이지에서 PRO 모드를 활성화해 주세요.")}
+            >
+              <Text style={styles.ctaText}>PRO 혜택 보기</Text>
+            </Pressable>
+          </View>
+        ) : null}
       </>
     );
   };
 
-  const renderProView = () => {
+  const renderWeeklyLocked = () => (
+    <View style={[styles.card, styles.lockedCard]}>
+      <Text style={styles.mainTitle}>주간 루틴 (PRO)</Text>
+      <Text style={styles.cardText}>주간 포커스와 데일리 체크는 PRO 전용 기능입니다.</Text>
+      <Pressable
+        style={styles.ctaButton}
+        onPress={() => Alert.alert("PRO 안내", "마이페이지에서 PRO 모드를 활성화해 주세요.")}
+      >
+        <Text style={styles.ctaText}>PRO 혜택 보기</Text>
+      </Pressable>
+    </View>
+  );
+
+  const renderWeeklyRoutine = () => {
     if (!weeklyRoutine) {
       return (
         <View style={styles.loadingCard}>
@@ -289,20 +372,31 @@ export default function RoutineScreen() {
     }
 
     const disableActions = savingSettings || checking;
+    const weekDays = buildWeekDays(weeklyRoutine.weekStart);
+    const todayIso = getTodayIso();
 
     return (
       <>
         <View style={styles.card}>
           <View style={styles.rowBetween}>
-            <Text style={styles.sectionLabel}>
-              {weeklyRoutine.weekStart} - {weeklyRoutine.weekEnd}
-            </Text>
-            <Text style={styles.focusBadge}>{weeklyRoutine.focus}</Text>
+            <View>
+              <Text style={styles.sectionLabel}>
+                {weeklyRoutine.weekStart} - {weeklyRoutine.weekEnd}
+              </Text>
+              <Text style={styles.mainTitle}>이번 주 루틴</Text>
+            </View>
+            <Pressable style={styles.reasonButton} onPress={() => showReason("weekly")}>
+              <Text style={styles.reasonButtonText}>추천 이유</Text>
+            </Pressable>
           </View>
-          <Text style={styles.mainTitle}>이번 주 루틴</Text>
+          <View style={styles.rowBetween}>
+            <Text style={styles.focusBadge}>{weeklyRoutine.focus}</Text>
+            <Text style={styles.subBadge}>주 {weeklyRoutine.progress.target}회 권장</Text>
+          </View>
           <Text style={styles.mainHighlight}>{weeklyRoutine.conclusion}</Text>
           <Text style={styles.cardText}>{weeklyRoutine.focusReason}</Text>
           <View style={styles.divider} />
+          <Text style={styles.cardSubtitle}>추천 요일 (자유롭게 선택 가능)</Text>
           <View style={styles.dayRow}>
             {DAY_ORDER.map((day) => {
               const selected = weeklyRoutine.recommendedDays.includes(day);
@@ -346,28 +440,61 @@ export default function RoutineScreen() {
 
         <View style={styles.card}>
           <View style={styles.rowBetween}>
-            <Text style={styles.mainTitle}>이번 주 진행</Text>
+            <Text style={styles.mainTitle}>이번 주 데일리 체크</Text>
             <Text style={styles.progressText}>
-              {Math.min(weeklyRoutine.progress.completed, weeklyRoutine.progress.target)}/
-              {weeklyRoutine.progress.target}회
+              {weeklyRoutine.progress.completed}/{weeklyRoutine.progress.target}회 권장
             </Text>
           </View>
           <Text style={styles.cardText}>
-            {weeklyRoutine.progress.completed >= weeklyRoutine.progress.target
-              ? "이번 주는 충분해요. 유지면 돼요."
-              : `이번 주 목표까지 ${weeklyRoutine.progress.target - weeklyRoutine.progress.completed}회 남았어요.`}
+            주 3회만 지켜도 충분하지만, 원하는 만큼 체크할 수 있어요. 오늘 완료했다면 해당 날짜를 눌러 주세요.
           </Text>
+          <View style={styles.calendarRow}>
+            {weekDays.map((day) => {
+              const isChecked = weeklyRoutine.progress.daysChecked.includes(day.iso);
+              const isToday = day.iso === todayIso;
+              const recommended = weeklyRoutine.recommendedDays.includes(day.label);
+              return (
+                <Pressable
+                  key={day.iso}
+                  style={styles.calendarCell}
+                  onPress={() => handleCheckIn(day.iso)}
+                  disabled={disableActions || isChecked}
+                >
+                  <View
+                    style={[
+                      styles.calendarCircle,
+                      recommended && styles.calendarCircleRecommended,
+                      isToday && styles.calendarCircleToday,
+                      isChecked && styles.calendarCircleChecked,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.calendarDayText,
+                        isChecked && styles.calendarDayTextChecked,
+                      ]}
+                    >
+                      {isChecked ? "✓" : day.dayNumber}
+                    </Text>
+                  </View>
+                  <Text style={[styles.calendarLabel, isToday && styles.calendarLabelToday]}>
+                    {day.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
           <Pressable
             style={[
               styles.ctaButton,
-              (weeklyRoutine.progress.completed >= weeklyRoutine.progress.target || checking) &&
+              (disableActions || weeklyRoutine.progress.daysChecked.includes(todayIso)) &&
                 styles.ctaButtonDisabled,
             ]}
-            onPress={handleCheckIn}
-            disabled={weeklyRoutine.progress.completed >= weeklyRoutine.progress.target || checking}
+            onPress={() => handleCheckIn(todayIso)}
+            disabled={disableActions || weeklyRoutine.progress.daysChecked.includes(todayIso)}
           >
             <Text style={styles.ctaText}>
-              {weeklyRoutine.progress.completed >= weeklyRoutine.progress.target ? "완료됨" : "오늘 루틴 완료"}
+              {weeklyRoutine.progress.daysChecked.includes(todayIso) ? "오늘 완료됨" : "오늘 루틴 완료"}
             </Text>
           </Pressable>
         </View>
@@ -377,7 +504,7 @@ export default function RoutineScreen() {
           {weeklyRoutine.actions.map((action) => (
             <View key={action.title} style={styles.actionRow}>
               <View style={styles.actionBadge}>
-                <Text style={styles.actionBadgeText}>주 3회</Text>
+                <Text style={styles.actionBadgeText}>주간</Text>
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.actionTitle}>{action.title}</Text>
@@ -439,15 +566,53 @@ export default function RoutineScreen() {
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>루틴</Text>
-        <Text style={styles.subtitle}>주 3회면 충분해요. 가볍게 이어갈 수 있도록 도와드릴게요.</Text>
+        <Text style={styles.subtitle}>
+          주 3회만 해도 충분하지만, 원하는 만큼 체크하며 루틴을 채워 보세요.
+        </Text>
+        <View style={styles.tabRow}>
+          {[
+            { key: "weekly", label: "주간", disabled: planType !== "pro" },
+            { key: "monthly", label: "월간", disabled: false },
+          ].map((tab) => {
+            const isActive = activeTab === tab.key;
+            return (
+              <Pressable
+                key={tab.key}
+                style={[
+                  styles.tabButton,
+                  isActive && styles.tabButtonActive,
+                  tab.disabled && styles.tabButtonDisabled,
+                ]}
+                onPress={() => {
+                  if (tab.disabled) {
+                    Alert.alert("PRO 전용", "주간 루틴은 PRO에서 이용할 수 있어요.");
+                    return;
+                  }
+                  setActiveTab(tab.key as RoutineTab);
+                }}
+                disabled={planLoading}
+              >
+                <Text
+                  style={[
+                    styles.tabLabel,
+                    isActive && styles.tabLabelActive,
+                    tab.disabled && styles.tabLabelDisabled,
+                  ]}
+                >
+                  {tab.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
         {planLoading ? (
           <View style={styles.loadingCard}>
             <Text style={styles.cardText}>루틴을 불러오는 중입니다...</Text>
           </View>
-        ) : planType === "pro" ? (
-          renderProView()
+        ) : activeTab === "weekly" ? (
+          planType === "pro" ? renderWeeklyRoutine() : renderWeeklyLocked()
         ) : (
-          renderFreeView()
+          renderMonthlyRoutine(planType !== "pro")
         )}
       </ScrollView>
     </SafeAreaView>
@@ -462,6 +627,35 @@ const autoRebalanceDays = () => {
   ];
   const index = Math.floor(Math.random() * baseSets.length);
   return baseSets[index];
+};
+
+const toLocalDate = (iso: string) => {
+  const [year, month, day] = iso.split("-").map((value) => parseInt(value, 10));
+  return new Date(year, (month ?? 1) - 1, day ?? 1);
+};
+
+const formatIsoDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const buildWeekDays = (weekStart: string) => {
+  const start = toLocalDate(weekStart);
+  return Array.from({ length: 7 }).map((_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    return {
+      iso: formatIsoDate(date),
+      dayNumber: date.getDate(),
+      label: WEEKDAY_LABELS[date.getDay()],
+    };
+  });
+};
+
+const getTodayIso = () => {
+  return formatIsoDate(new Date());
 };
 
 const styles = StyleSheet.create({
@@ -481,6 +675,36 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 14,
     color: "#6F6F73",
+  },
+  tabRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: "#F1EDF9",
+    alignItems: "center",
+  },
+  tabButtonActive: {
+    backgroundColor: "#1F1F24",
+  },
+  tabButtonDisabled: {
+    opacity: 0.6,
+  },
+  tabLabel: {
+    fontSize: 14,
+    color: "#4E4E55",
+    fontWeight: "700",
+  },
+  tabLabelActive: {
+    color: "#FFFFFF",
+  },
+  tabLabelDisabled: {
+    color: "#8F8F95",
   },
   loadingCard: {
     marginTop: 20,
@@ -537,6 +761,19 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 14,
   },
+  reasonButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5DCF5",
+    backgroundColor: "#F8F6FF",
+  },
+  reasonButtonText: {
+    fontSize: 12,
+    color: "#5C3AA1",
+    fontWeight: "700",
+  },
   divider: {
     height: 1,
     backgroundColor: "#EFE8FB",
@@ -584,6 +821,15 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "#EFE6FF",
     color: "#5C3AA1",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  subBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "#F3F0FA",
+    color: "#4B3A63",
     fontSize: 12,
     fontWeight: "600",
   },
@@ -651,6 +897,54 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
     color: "#1F1F24",
+  },
+  calendarRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 8,
+    marginVertical: 8,
+  },
+  calendarCell: {
+    alignItems: "center",
+    flex: 1,
+    gap: 6,
+  },
+  calendarCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "#E5DCF5",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFFFFF",
+  },
+  calendarCircleRecommended: {
+    borderColor: "#CFC4ED",
+    backgroundColor: "#F8F5FF",
+  },
+  calendarCircleToday: {
+    borderColor: "#5C3AA1",
+  },
+  calendarCircleChecked: {
+    backgroundColor: "#1F1F24",
+    borderColor: "#1F1F24",
+  },
+  calendarDayText: {
+    fontSize: 14,
+    color: "#4E4E55",
+    fontWeight: "700",
+  },
+  calendarDayTextChecked: {
+    color: "#FFFFFF",
+  },
+  calendarLabel: {
+    fontSize: 12,
+    color: "#6F6F73",
+    fontWeight: "600",
+  },
+  calendarLabelToday: {
+    color: "#5C3AA1",
   },
   actionRow: {
     flexDirection: "row",

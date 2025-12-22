@@ -26,9 +26,14 @@ export async function POST(req: Request) {
       auth: { persistSession: false },
     });
     const routineRow = await ensureWeeklyRoutine(supabase, userId);
-    const completed = await recordWeeklyCheck(supabase, routineRow.id);
-    const payload = toWeeklyPayload(routineRow, completed);
-    return NextResponse.json({ progress: payload.progress });
+    const progress = await recordWeeklyCheck(
+      supabase,
+      routineRow.id,
+      routineRow.week_start,
+      routineRow.week_end
+    );
+    const payload = toWeeklyPayload(routineRow, progress.count, progress.daysChecked);
+    return NextResponse.json({ routine: payload });
   } catch (error) {
     console.error("weekly routine check error", error);
     const message = error instanceof Error ? error.message : "체크를 기록하지 못했습니다.";

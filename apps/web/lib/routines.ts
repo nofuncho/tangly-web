@@ -82,6 +82,7 @@ export type WeeklyRoutinePayload = {
   progress: {
     completed: number;
     target: number;
+    daysChecked: string[];
   };
 };
 
@@ -94,6 +95,11 @@ export type RoutineStep = {
   key: string;
   label: string;
   enabled: boolean;
+};
+
+export type WeeklyProgressDetail = {
+  count: number;
+  daysChecked: string[];
 };
 
 type RecommendationContext = {
@@ -253,25 +259,57 @@ export const updateWeeklyRoutine = async (
   return data;
 };
 
-export const recordWeeklyCheck = async (supabase: SupabaseClient, routineId: string) => {
+export const recordWeeklyCheck = async (
+  supabase: SupabaseClient,
+  routineId: string,
+  weekStart?: string,
+  weekEnd?: string
+) => {
   const { error } = await supabase
     .from("weekly_routine_checks")
     .insert({ routine_id: routineId });
   if (error) {
     throw error;
   }
-  return getWeeklyProgressCount(supabase, routineId);
+  return getWeeklyProgressDetail(supabase, routineId, weekStart, weekEnd);
 };
 
-export const getWeeklyProgressCount = async (supabase: SupabaseClient, routineId: string) => {
-  const { count, error } = await supabase
+export const getWeeklyProgressDetail = async (
+  supabase: SupabaseClient,
+  routineId: string,
+  weekStart?: string,
+  weekEnd?: string
+): Promise<WeeklyProgressDetail> => {
+  const range = weekStart && weekEnd ? { weekStart, weekEnd } : getWeekRange();
+  const { data, error } = await supabase
     .from("weekly_routine_checks")
-    .select("*", { head: true, count: "exact" })
-    .eq("routine_id", routineId);
+    .select("created_at")
+    .eq("routine_id", routineId)
+    .gte("created_at", `${range.weekStart}T00:00:00.000Z`)
+    .lte("created_at", `${range.weekEnd}T23:59:59.999Z`)
+    .order("created_at", { ascending: true });
+
   if (error) {
     throw error;
   }
-  return count ?? 0;
+
+  const daysChecked = Array.from(
+    new Set(
+      (data ?? [])
+        .map((entry) => (entry?.created_at ? `${entry.created_at}`.slice(0, 10) : null))
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+
+  return {
+    count: daysChecked.length,
+    daysChecked,
+  };
+};
+
+export const getWeeklyProgressCount = async (supabase: SupabaseClient, routineId: string) => {
+  const { count } = await getWeeklyProgressDetail(supabase, routineId);
+  return count;
 };
 
 export const toMonthlyPayload = (row: MonthlyRoutineRow): MonthlyRoutinePayload => ({
@@ -286,7 +324,8 @@ export const toMonthlyPayload = (row: MonthlyRoutineRow): MonthlyRoutinePayload 
 
 export const toWeeklyPayload = (
   row: WeeklyRoutineRow,
-  progress: number
+  progressCount: number,
+  daysChecked: string[] = []
 ): WeeklyRoutinePayload => ({
   id: row.id,
   weekStart: row.week_start,
@@ -303,8 +342,9 @@ export const toWeeklyPayload = (
   aiPayload: (row.ai_payload as AiReportContent | null) ?? null,
   generatedAt: row.generated_at,
   progress: {
-    completed: progress,
-    target: 3,
+    completed: progressCount,
+    target: Math.max(row.recommended_days?.length ?? DAY_SETS[0].length, 3),
+    daysChecked: Array.from(new Set(daysChecked)),
   },
 });
 
